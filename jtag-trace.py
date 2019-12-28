@@ -153,6 +153,7 @@ def jtag_mach(jtag_trace):
     departing_index = 0
 
     for cycle in jtag_trace:
+        # print(state)
         index = index + 1
         if state == JtagState.TEST_LOGIC_RESET:
             if cycle['tms']:
@@ -257,9 +258,14 @@ def jtag_mach(jtag_trace):
 
 
 def main():
+    global state
+
     parser = argparse.ArgumentParser(description="Parse JTAG waveform")
     parser.add_argument(
         "-f", "--file", required=True, help="filename to process", type=str
+    )
+    parser.add_argument(
+        "-s", "--salae-format", default=False, action="store_true", help="Use Salae logic analyzer format"
     )
     args = parser.parse_args()
 
@@ -274,43 +280,89 @@ def main():
         last_series = 0.0
         first = True
         jtag_trace = []
-        print("CSV header data:")
-        print(reader.__next__())
-        print(reader.__next__())
-        print(reader.__next__())
 
-        for row in reader:
-            if first:
-                first = False
+        if args.salae_format == False:
+            print("CSV header data:")
+            print(reader.__next__())
+            print(reader.__next__())
+            print(reader.__next__())
+
+            for row in reader:
+                if first:
+                    first = False
+                    last_time = float(row[0])
+                    last_series = last_time
+
+                # store the packet if a new one is found, and create a new packet
+                if float(row[0]) > (float(last_time) + 350.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
+                    jtag_packets += [{'start' : last_series, 'trace' : jtag_trace}]
+                    last_series = float(row[0])
+                    jtag_trace = []
+
+                # otherwise add on to the current packet
+                bus = int(row[1])
+                if bus & 4:
+                    tdi = True
+                else:
+                    tdi = False
+                if bus & 2:
+                    tms = True
+                else:
+                    tms = False
+                if bus & 1:
+                    tdo = True
+                else:
+                    tdo = False
+
+                jtag_trace += [{'tdi': tdi, 'tms': tms, 'tdo': tdo, 'time': float(row[0])}]
                 last_time = float(row[0])
-                last_series = last_time
+        else:
+            print("Salae format CSV header data:")
+            print(reader.__next__())
 
-            # store the packet if a new one is found, and create a new packet
-            if float(row[0]) > (float(last_time) + 350.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
-                jtag_packets += [{'start' : last_series, 'trace' : jtag_trace}]
-                last_series = float(row[0])
-                jtag_trace = []
+            tclk_last = False
+            for row in reader:
+                if first:
+                    first = False
+                    last_time = float(row[0])
+                    last_series = last_time
+                    if int(row[1]) == 1:
+                        tclk_last = True
+                    else:
+                        tclk_last = False
 
-            # otherwise add on to the current packet
-            bus = int(row[1])
-            if bus & 4:
-                tdi = True
-            else:
-                tdi = False
-            if bus & 2:
-                tms = True
-            else:
-                tms = False
-            if bus & 1:
-                tdo = True
-            else:
-                tdo = False
+                # store the packet if a new one is found, and create a new packet
+                if float(row[0]) > (float(
+                        last_time) + 350.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
+                    jtag_packets += [{'start': last_series, 'trace': jtag_trace}]
+                    last_series = float(row[0])
+                    jtag_trace = []
 
-            jtag_trace += [{'tdi': tdi, 'tms': tms, 'tdo': tdo, 'time': float(row[0])}]
-            last_time = float(row[0])
+                if (int(row[1]) == 1) and tclk_last == False:
+                    tclk_last = True
+
+                    # otherwise add on to the current packet
+                    if int(row[4]) == 1:
+                        tdi = True
+                    else:
+                        tdi = False
+                    if int(row[3]) == 1:
+                        tms = True
+                    else:
+                        tms = False
+                    if int(row[2]) == 1:
+                        tdo = True
+                    else:
+                        tdo = False
+
+                    jtag_trace += [{'tdi': tdi, 'tms': tms, 'tdo': tdo, 'time': float(row[0])}]
+                    last_time = float(row[0])
+                elif (int(row[1]) == 0) and tclk_last == True: # falling edge
+                    tclk_last = False
 
     for packet in jtag_packets:
         # print('\n**** Start packet at ', "{:.3f}".format(packet['start'] * 1000), 'ms')
+        # print(packet['trace'])
         jtag_mach(packet['trace'])
 
 
