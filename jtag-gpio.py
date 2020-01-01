@@ -74,6 +74,8 @@ def decode_ir(ir):
     elif ir == 0b001010:
         return 'HIGHZ_IO'
     elif ir == 0b001011:
+        return 'JPROGRAM'
+    elif ir == 0b001100:
         return 'JSTART'
     elif ir == 0b001101:
         return 'JSHUTDOWN'

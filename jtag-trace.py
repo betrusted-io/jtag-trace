@@ -49,6 +49,8 @@ def decode_ir(ir):
     elif ir == 0b001010:
         return 'HIGHZ_IO'
     elif ir == 0b001011:
+        return 'JPROGRAM'
+    elif ir == 0b001100:
         return 'JSTART'
     elif ir == 0b001101:
         return 'JSHUTDOWN'
@@ -76,6 +78,8 @@ def decode_ir(ir):
         return 'FUSE_USER'
     elif ir == 0b110100:
         return 'FUSE_CNTL'
+    elif ir == 0b110000:
+        return 'EFUSE_CMD'
     else:
         return ''  # unknown just leave blank for now
 
@@ -361,8 +365,8 @@ def main():
                     tclk_last = False
 
     for packet in jtag_packets:
-        # print('\n**** Start packet at ', "{:.3f}".format(packet['start'] * 1000), 'ms')
-        # print(packet['trace'])
+        #print('\n**** Start packet at ', "{:.3f}".format(packet['start'] * 1000), 'ms')
+        #print(packet['trace'])
         jtag_mach(packet['trace'])
 
 
