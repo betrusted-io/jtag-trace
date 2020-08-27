@@ -80,6 +80,8 @@ def decode_ir(ir):
         return 'FUSE_CNTL'
     elif ir == 0b110000:
         return 'EFUSE_CMD'
+    elif ir == 0b010101:
+        return 'BBKEY_RBK'
     else:
         return ''  # unknown just leave blank for now
 
@@ -155,6 +157,7 @@ def jtag_mach(jtag_trace):
     loopbacks = 0
     index = -1
     departing_index = 0
+    print("* inferred reset")
 
     for cycle in jtag_trace:
         # print(state)
@@ -206,6 +209,8 @@ def jtag_mach(jtag_trace):
                 continue
 
         elif state == JtagState.SHIFT:
+            # print(cycle['tdi'])
+            # print(leg)
             reg_in += [cycle['tdi']]
             reg_out += [cycle['tdo']]
             if cycle['tms']:
@@ -298,7 +303,8 @@ def main():
                     last_series = last_time
 
                 # store the packet if a new one is found, and create a new packet
-                if float(row[0]) > (float(last_time) + 350.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
+                #print("{}, {}, {}".format(float(row[0]), float(last_time), float(row[0]) > (float(last_time) + 10e-6)))
+                if float(row[0]) > (float(last_time) + 100.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
                     jtag_packets += [{'start' : last_series, 'trace' : jtag_trace}]
                     last_series = float(row[0])
                     jtag_trace = []
