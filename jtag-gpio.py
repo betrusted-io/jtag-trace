@@ -245,6 +245,8 @@ def main():
             if len(row) < 3:
                 continue
             chain = str(row[0]).lower().strip()
+            if chain[0] == '#':
+                continue
             length = int(row[1])
             if str(row[2]).strip()[:2] == '0x':
                 value = int(row[2], 16)
