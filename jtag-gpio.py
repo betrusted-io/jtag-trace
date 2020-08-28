@@ -37,6 +37,7 @@ jtag_legs = []
 tdo_vect = ''
 jtag_results = []
 do_pause = False
+in_cfg = False
 
 TCK_pin = 4
 TMS_pin = 17
@@ -53,6 +54,7 @@ def phy_sync(tdi, tms):
     GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (0, tdi, tms) )
 
     return tdo
+
 
 def decode_ir(ir):
     if ir == 0b100110:
@@ -112,6 +114,21 @@ def decode_ir(ir):
     else:
         return ''  # unknown just leave blank for now
 
+def debug_spew(cur_leg):
+    global in_cfg
+    
+    if len(cur_leg[1]) < 384:
+        print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+        if decode_ir(int(cur_leg[1],2)) == 'CFG_IN' or decode_ir(int(cur_leg[1],2)) == 'CFG_OUT':
+            print("in config")
+            in_cfg = True
+        else:
+            if cur_leg[0] != JtagLeg.DR:
+                print("out of config")
+                in_cfg = False
+    else:
+        print("start: ", cur_leg[0], ' large data of length ', str(len(cur_leg[1])))
+
 # take a trace and attempt to extract IR, DR values
 # assume: at the start of each 'trace' we are coming from TEST-LOGIC-RESET
 def jtag_step():
@@ -121,6 +138,7 @@ def jtag_step():
     global jtag_results
     global tdo_vect
     global do_pause
+    global in_cfg
 
     # print(state)
     if state == JtagState.TEST_LOGIC_RESET:
@@ -159,19 +177,19 @@ def jtag_step():
                 phy_sync(0, 1)
                 state = JtagState.TEST_LOGIC_RESET
                 cur_leg = jtag_legs.pop(0)
-                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                debug_spew(cur_leg)
             elif cur_leg[0] == JtagLeg.DL:
                 time.sleep(0.005) # 5ms delay
                 cur_leg = jtag_legs.pop(0)
-                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                debug_spew(cur_leg)
             elif cur_leg[0] == JtagLeg.ID:
                 phy_sync(0, 0)
                 cur_leg = jtag_legs.pop(0)
-                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                debug_spew(cur_leg)
         else:
             if len(jtag_legs):
                 cur_leg = jtag_legs.pop(0)
-                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                debug_spew(cur_leg)
             else:
                 phy_sync(0, 0)
             state = JtagState.RUN_TEST_IDLE
@@ -186,31 +204,52 @@ def jtag_step():
         state = JtagState.SHIFT
 
     elif state == JtagState.SHIFT:
-        if len(cur_leg[1]) > 1:
-            if cur_leg[1][-1] == '1':
-                tdi = 1
-            else:
-                tdi = 0
-            cur_leg[1] = cur_leg[1][:-1]
-            tdo = phy_sync(tdi, 0)
-            if tdo == 1:
-                tdo_vect = '1' + tdo_vect
-            else:
-                tdo_vect = '0' + tdo_vect
-            state = JtagState.SHIFT
-        else: # this is the last item
-            if cur_leg[1][0] == '1':
+        if in_cfg and cur_leg[0] == JtagLeg.DR:
+            print('in config, shifting in MSB order')
+            # print(cur_leg[1])
+            for bit in cur_leg[1][:-1]:
+                if bit == '1':
+                    tdi = 1
+                else:
+                    tdi = 0
+                phy_sync(tdi, 0) # skip recording the output
+                state = JtagState.SHIFT
+
+            if cur_leg[-1:] == '1':
                 tdi = 1
             else:
                 tdi = 0
             cur_leg = ''
-            tdo = phy_sync(tdi, 1)
-            if tdo == 1:
-                tdo_vect = '1' + tdo_vect
-            else:
-                tdo_vect = '0' + tdo_vect
+            phy_sync(tdi, 0) # skip recording the output
+            tdo_vect = '0'
             state = JtagState.EXIT1
-
+            print('leaving config')
+            
+        else:
+            if len(cur_leg[1]) > 1:
+                if cur_leg[1][-1] == '1':
+                    tdi = 1
+                else:
+                    tdi = 0
+                cur_leg[1] = cur_leg[1][:-1]
+                tdo = phy_sync(tdi, 0)
+                if tdo == 1:
+                    tdo_vect = '1' + tdo_vect
+                else:
+                    tdo_vect = '0' + tdo_vect
+                state = JtagState.SHIFT
+            else: # this is the last item
+                if cur_leg[1][0] == '1':
+                    tdi = 1
+                else:
+                    tdi = 0
+                cur_leg = ''
+                tdo = phy_sync(tdi, 1)
+                if tdo == 1:
+                    tdo_vect = '1' + tdo_vect
+                else:
+                    tdo_vect = '0' + tdo_vect
+                state = JtagState.EXIT1
 
     elif state == JtagState.EXIT1:
         if do_pause:
@@ -248,7 +287,7 @@ def jtag_step():
                     do_pause = True
                     
                 cur_leg = jtag_legs.pop(0)
-                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                debug_spew(cur_leg)
                 phy_sync(0,1)
                 state = JtagState.SELECT_SCAN
 
@@ -275,6 +314,31 @@ def jtag_next():
         # we're in a leg, run to idle
         while state != JtagState.TEST_LOGIC_RESET and state != JtagState.RUN_TEST_IDLE:
             jtag_step()
+
+def do_bitstream(ifile):
+    global jtag_legs
+    
+    with open(ifile, "rb") as f:
+        binfile = f.read()
+
+        position = 0
+        while position < len(binfile):
+            sync = int.from_bytes(binfile[position:position+4], 'big')
+            if sync == 0xaa995566:
+                break
+            position = position + 1
+
+        config_data = bin(int.from_bytes(binfile[position:], byteorder='big'))[2:]
+        
+        jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+        jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+        jtag_legs.append([JtagLeg.DR, config_data, 'config_data'])
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+        jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+
         
         
 def main():
@@ -285,6 +349,9 @@ def main():
     parser.add_argument(
         "-f", "--file", required=True, help="file containing jtag command list", type=str
     )
+    parser.add_argument(
+        "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set"
+    )
     args = parser.parse_args()
 
     ifile = args.file
@@ -293,7 +360,14 @@ def main():
 
     GPIO.setup((TCK_pin, TMS_pin, TDI_pin), GPIO.OUT)
     GPIO.setup(TDO_pin, GPIO.IN)
-    
+
+    if args.bitstream:
+        do_bitstream(ifile)
+        while len(jtag_legs):
+           jtag_next()
+        GPIO.cleanup()
+        exit(0)
+        
 
     # CSV file format
     # chain, width, value:
