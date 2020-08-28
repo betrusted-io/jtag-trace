@@ -14,6 +14,11 @@ from enum import Enum
 class JtagLeg(Enum):
     DR = 0
     IR = 1
+    RS = 2 # reset
+    DL = 3 # long delay
+    ID = 4 # idle in run-test
+    IRP = 5  # IR with pause
+    IRD = 6  # transition to IR directly
 
 class JtagState(Enum):
     TEST_LOGIC_RESET = 0
@@ -31,6 +36,7 @@ cur_leg = []
 jtag_legs = []
 tdo_vect = ''
 jtag_results = []
+do_pause = False
 
 TCK_pin = 4
 TMS_pin = 17
@@ -114,19 +120,54 @@ def jtag_step():
     global jtag_legs
     global jtag_results
     global tdo_vect
+    global do_pause
 
+    # print(state)
     if state == JtagState.TEST_LOGIC_RESET:
         phy_sync(0, 0)
         state = JtagState.RUN_TEST_IDLE
 
     elif state == JtagState.RUN_TEST_IDLE:
         if len(cur_leg):
+            # print(cur_leg[0])
             if cur_leg[0] == JtagLeg.DR:
                 phy_sync(0, 1)
-            else:
+                state = JtagState.SELECT_SCAN
+            elif cur_leg[0] == JtagLeg.IR or cur_leg[0] == JtagLeg.IRD:
                 phy_sync(0, 1)
                 phy_sync(0, 1)
-            state = JtagState.SELECT_SCAN
+                do_pause = False
+                state = JtagState.SELECT_SCAN
+            elif cur_leg[0] == JtagLeg.IRP:
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                do_pause = True
+                state = JtagState.SELECT_SCAN
+            elif cur_leg[0] == JtagLeg.RS:
+                print("tms reset")
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                phy_sync(0, 1)
+                state = JtagState.TEST_LOGIC_RESET
+                cur_leg = jtag_legs.pop(0)
+                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+            elif cur_leg[0] == JtagLeg.DL:
+                time.sleep(0.005) # 5ms delay
+                cur_leg = jtag_legs.pop(0)
+                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+            elif cur_leg[0] == JtagLeg.ID:
+                phy_sync(0, 0)
+                cur_leg = jtag_legs.pop(0)
+                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
         else:
             if len(jtag_legs):
                 cur_leg = jtag_legs.pop(0)
@@ -172,10 +213,17 @@ def jtag_step():
 
 
     elif state == JtagState.EXIT1:
-        phy_sync(0, 1)        
-        state = JtagState.UPDATE
+        if do_pause:
+           phy_sync(0, 0)
+           state = JtagState.PAUSE
+           do_pause = False
+        else:
+           phy_sync(0, 1)        
+           state = JtagState.UPDATE
 
     elif state == JtagState.PAUSE:
+        print("pause")
+        # we could put more pauses in here but we haven't seen this needed yet
         phy_sync(0, 1)        
         state = JtagState.EXIT2
 
@@ -190,6 +238,19 @@ def jtag_step():
         tdo_vect = ''
 
         state = JtagState.RUN_TEST_IDLE
+        # handle case of "shortcut" to DR
+        if len(jtag_legs):
+            if (jtag_legs[0][0] == JtagLeg.DR) or (jtag_legs[0][0] == JtagLeg.IRP) or (jtag_legs[0][0] == JtagLeg.IRD):
+                if jtag_legs[0][0] == JtagLeg.IRP or jtag_legs[0][0] == JtagLeg.IRD:
+                    phy_sync(0, 1)  # +1 cycle on top of the DR cycle below
+                    print("IR bypassing wait state")
+                if jtag_legs[0][0] == JtagLeg.IRP:
+                    do_pause = True
+                    
+                cur_leg = jtag_legs.pop(0)
+                print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+                phy_sync(0,1)
+                state = JtagState.SELECT_SCAN
 
     else:
         print("Illegal state encountered!")
@@ -255,21 +316,37 @@ def main():
             else:
                 value = int(row[2])
 
-            if (chain != 'dr') & (chain != 'ir'):
+            if (chain != 'dr') & (chain != 'ir') & (chain != 'rs') & (chain != 'dl') & \
+               (chain != 'id') & (chain != 'irp') & (chain != 'ird'):
                 print('unknown chain type ', chain, ' aborting!')
                 GPIO.cleanup()
                 exit(1)
 
             # print('found JTAG chain ', chain, ' with len ', str(length), ' and data ', hex(value))
+            if chain == 'rs':
+                jtag_legs.append([JtagLeg.RS, '0', '0'])
+            elif chain == 'dl':
+                jtag_legs.append([JtagLeg.DL, '0', '0'])
+            elif chain == 'id':
+                jtag_legs.append([JtagLeg.ID, '0', '0'])
 
-            if len(row) > 3:
-                jtag_legs.append([JtagLeg.DR if chain == 'dr' else JtagLeg.IR, '%0*d' % (length, int(bin(value)[2:])), row[3]])
             else:
-                jtag_legs.append([JtagLeg.DR if chain == 'dr' else JtagLeg.IR, '%0*d' % (length, int(bin(value)[2:])), ' '])            
+                if chain == 'dr':
+                    code = JtagLeg.DR
+                elif chain == 'ir':
+                    code = JtagLeg.IR
+                elif chain == 'ird':
+                    code = JtagLeg.IRD
+                else:
+                    code = JtagLeg.IRP
+                if len(row) > 3:
+                    jtag_legs.append([code, '%0*d' % (length, int(bin(value)[2:])), row[3]])
+                else:
+                    jtag_legs.append([code, '%0*d' % (length, int(bin(value)[2:])), ' '])            
     # print(jtag_legs)
 
     while len(jtag_legs):
-        time.sleep(0.002) # give 2 ms between each command
+        # time.sleep(0.002) # give 2 ms between each command
         jtag_next()
         
 #        while len(jtag_results):
