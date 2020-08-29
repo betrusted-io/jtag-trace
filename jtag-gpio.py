@@ -8,8 +8,22 @@ except RuntimeError:
 import csv
 import argparse
 import time
+import subprocess
+import logging
+import sys
 
 from enum import Enum
+
+from cffi import FFI
+try:
+    from gpioffi.lib import pi_mmio_init
+except:
+    print('Note: FFI library missing, rebuilding...')
+    subprocess.call(['python3', 'build.py'])
+    print('Please try the command again.')
+    exit(1)
+from gpioffi.lib import jtag_pins
+from gpioffi.lib import jtag_prog
 
 class JtagLeg(Enum):
     DR = 0
@@ -38,6 +52,9 @@ tdo_vect = ''
 jtag_results = []
 do_pause = False
 in_cfg = False
+gpio_pointer = 0
+keepalive = []
+compat = False
 
 TCK_pin = 4
 TMS_pin = 17
@@ -47,11 +64,15 @@ TDO_pin = 22  # TDO on FPGA, in for this script
 
 def phy_sync(tdi, tms):
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
-    tdo = GPIO.input(TDO_pin) # grab the TDO value before the clock changes
+
+    if compat:
+        tdo = GPIO.input(TDO_pin) # grab the TDO value before the clock changes
     
-    GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (0, tdi, tms) )
-    GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (1, tdi, tms) )
-    GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (0, tdi, tms) )
+        GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (0, tdi, tms) )
+        GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (1, tdi, tms) )
+        GPIO.output( (TCK_pin, TDI_pin, TMS_pin), (0, tdi, tms) )
+    else:
+        tdo = jtag_pins(tdi, tms, gpio_pointer)
 
     return tdo
 
@@ -118,16 +139,14 @@ def debug_spew(cur_leg):
     global in_cfg
     
     if len(cur_leg[1]) < 384:
-        print("start: ", cur_leg, "(", decode_ir(int(cur_leg[1],2)), ") / ", cur_leg[2] )
+        logging.debug("start: %s (%s) / %s", str(cur_leg), str(decode_ir(int(cur_leg[1],2))), str(cur_leg[2]) )
         if decode_ir(int(cur_leg[1],2)) == 'CFG_IN' or decode_ir(int(cur_leg[1],2)) == 'CFG_OUT':
-            print("in config")
             in_cfg = True
         else:
             if cur_leg[0] != JtagLeg.DR:
-                print("out of config")
                 in_cfg = False
     else:
-        print("start: ", cur_leg[0], ' large data of length ', str(len(cur_leg[1])))
+        logging.debug("start: %s large data of length %s", cur_leg[0], str(len(cur_leg[1])))
 
 # take a trace and attempt to extract IR, DR values
 # assume: at the start of each 'trace' we are coming from TEST-LOGIC-RESET
@@ -139,15 +158,19 @@ def jtag_step():
     global tdo_vect
     global do_pause
     global in_cfg
+    global TCK_pin, TMS_pin, TDI_pin, TDO_pin
+    global gpio_pointer
+    global keepalive
+    global compat
 
-    # print(state)
+    # logging.debug(state)
     if state == JtagState.TEST_LOGIC_RESET:
         phy_sync(0, 0)
         state = JtagState.RUN_TEST_IDLE
 
     elif state == JtagState.RUN_TEST_IDLE:
         if len(cur_leg):
-            # print(cur_leg[0])
+            # logging.debug(cur_leg[0])
             if cur_leg[0] == JtagLeg.DR:
                 phy_sync(0, 1)
                 state = JtagState.SELECT_SCAN
@@ -162,7 +185,7 @@ def jtag_step():
                 do_pause = True
                 state = JtagState.SELECT_SCAN
             elif cur_leg[0] == JtagLeg.RS:
-                print("tms reset")
+                logging.debug("tms reset")
                 phy_sync(0, 1)
                 phy_sync(0, 1)
                 phy_sync(0, 1)
@@ -205,15 +228,22 @@ def jtag_step():
 
     elif state == JtagState.SHIFT:
         if in_cfg and cur_leg[0] == JtagLeg.DR:
-            print('in config, shifting in MSB order')
-            # print(cur_leg[1])
-            for bit in cur_leg[1][:-1]:
-                if bit == '1':
-                    tdi = 1
-                else:
-                    tdi = 0
-                phy_sync(tdi, 0) # skip recording the output
-                state = JtagState.SHIFT
+            if compat:
+                for bit in cur_leg[1][:-1]:
+                   if bit == '1':
+                      GPIO.output( (TCK_pin, TDI_pin), (0, 1) )
+                      GPIO.output( (TCK_pin, TDI_pin), (1, 1) )
+                   else:
+                      GPIO.output( (TCK_pin, TDI_pin), (0, 0) )
+                      GPIO.output( (TCK_pin, TDI_pin), (1, 0) )
+            else:
+                bytestr = bytes(cur_leg[1][:-1], 'utf-8')
+                ffi = FFI()
+                ffistr = ffi.new("char[]", bytestr)
+                keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
+                jtag_prog(ffistr, gpio_pointer)
+                
+            state = JtagState.SHIFT
 
             if cur_leg[-1:] == '1':
                 tdi = 1
@@ -223,7 +253,7 @@ def jtag_step():
             phy_sync(tdi, 0) # skip recording the output
             tdo_vect = '0'
             state = JtagState.EXIT1
-            print('leaving config')
+            logging.debug('leaving config')
             
         else:
             if len(cur_leg[1]) > 1:
@@ -261,7 +291,7 @@ def jtag_step():
            state = JtagState.UPDATE
 
     elif state == JtagState.PAUSE:
-        print("pause")
+        logging.debug("pause")
         # we could put more pauses in here but we haven't seen this needed yet
         phy_sync(0, 1)        
         state = JtagState.EXIT2
@@ -273,7 +303,7 @@ def jtag_step():
     elif state == JtagState.UPDATE:
         phy_sync(0, 0)        
         jtag_results.append(int(tdo_vect, 2)) # interpret the vector and save it
-        print("result: ", hex(int(tdo_vect, 2)) )
+        logging.debug("result: %s", str(hex(int(tdo_vect, 2))) )
         tdo_vect = ''
 
         state = JtagState.RUN_TEST_IDLE
@@ -282,7 +312,7 @@ def jtag_step():
             if (jtag_legs[0][0] == JtagLeg.DR) or (jtag_legs[0][0] == JtagLeg.IRP) or (jtag_legs[0][0] == JtagLeg.IRD):
                 if jtag_legs[0][0] == JtagLeg.IRP or jtag_legs[0][0] == JtagLeg.IRD:
                     phy_sync(0, 1)  # +1 cycle on top of the DR cycle below
-                    print("IR bypassing wait state")
+                    logging.debug("IR bypassing wait state")
                 if jtag_legs[0][0] == JtagLeg.IRP:
                     do_pause = True
                     
@@ -332,6 +362,9 @@ def do_bitstream(ifile):
         
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+        jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
+        jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+        jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
         jtag_legs.append([JtagLeg.DR, config_data, 'config_data'])
@@ -344,18 +377,45 @@ def do_bitstream(ifile):
 def main():
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
     global jtag_legs, jtag_results
-    
+    global gpio_pointer
+    global compat
+
     parser = argparse.ArgumentParser(description="Drive JTAG via Rpi GPIO")
     parser.add_argument(
-        "-f", "--file", required=True, help="file containing jtag command list", type=str
+        "-f", "--file", required=True, help="file containing jtag command list or bitstream", type=str
     )
     parser.add_argument(
         "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set"
     )
+    parser.add_argument(
+        "-c", "--compat", default=False, action="store_true", help="Use compatibility mode (warning: about 100x slower than FFI)"
+    )
+    parser.add_argument(
+        "-d", "--debug", help="turn on debugging spew", default=False, action="store_true"
+    )
     args = parser.parse_args()
-
+    if args.debug:
+       logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+                
     ifile = args.file
+    compat = args.compat
 
+    rev = GPIO.RPI_INFO
+    if rev['P1_REVISION'] == 1:
+       gpio_pointer = pi_mmio_init(0x20000000)
+    elif rev['P1_REVISION'] == 3 or rev['P1_REVISION'] == 2:
+       gpio_pointer = pi_mmio_init(0x3F000000)
+    elif rev['P1_REVISION'] == 4:
+       gpio_pointer = pi_mmio_init(0xFE000000)
+    else:
+        print("Unknown Raspberry Pi rev, can't set GPIO base")
+        compat = True
+
+    if args.bitstream:
+        print('Programming .bin file to FPGA:', ifile)
+    else:
+        print('Executing .jtg command file:', ifile)
+        
     GPIO.setmode(GPIO.BCM)
 
     GPIO.setup((TCK_pin, TMS_pin, TDI_pin), GPIO.OUT)
@@ -396,7 +456,7 @@ def main():
                 GPIO.cleanup()
                 exit(1)
 
-            # print('found JTAG chain ', chain, ' with len ', str(length), ' and data ', hex(value))
+            # logging.debug('found JTAG chain ', chain, ' with len ', str(length), ' and data ', hex(value))
             if chain == 'rs':
                 jtag_legs.append([JtagLeg.RS, '0', '0'])
             elif chain == 'dl':
@@ -417,7 +477,7 @@ def main():
                     jtag_legs.append([code, '%0*d' % (length, int(bin(value)[2:])), row[3]])
                 else:
                     jtag_legs.append([code, '%0*d' % (length, int(bin(value)[2:])), ' '])            
-    # print(jtag_legs)
+    # logging.debug(jtag_legs)
 
     while len(jtag_legs):
         # time.sleep(0.002) # give 2 ms between each command
