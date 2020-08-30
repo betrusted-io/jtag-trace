@@ -64,6 +64,14 @@ All commands have a format of
 
 `jtag.jtg` and `readout.jtg` contain examples of how to write JTAG scripts.
 
+The `bbramtest.jtg` contains an example of how to burn the BBRAM with
+the encryption key described in `bbramtest.nky` (provided so it's easy to
+see the mapping of key bits to `ISC_PROGRAM` arguments). Note that the BBRAM key
+burning procedure setup (from JPROGRAM to PROGRAM_KEY) is very sensitive
+to timing: some commands need to go through a pause state, while others
+require extra wait states in between command sequences. The pauses are
+accomplished using the `irp` and `id` command verbs. 
+
 ## WBSTAR (Starbleed) Exploiting
 
 AES encrypted bitstream and no key? No problem (unfortunately, or
