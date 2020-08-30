@@ -304,7 +304,6 @@ def jtag_step():
         state = JtagState.UPDATE
 
     elif state == JtagState.UPDATE:
-        phy_sync(0, 0)        
         jtag_results.append(int(tdo_vect, 2)) # interpret the vector and save it
         logging.debug("result: %s", str(hex(int(tdo_vect, 2))) )
         if readout:
@@ -313,7 +312,6 @@ def jtag_step():
             readout = False
         tdo_vect = ''
 
-        state = JtagState.RUN_TEST_IDLE
         # handle case of "shortcut" to DR
         if len(jtag_legs):
             if (jtag_legs[0][0] == JtagLeg.DR) or (jtag_legs[0][0] == JtagLeg.IRP) or (jtag_legs[0][0] == JtagLeg.IRD):
@@ -327,6 +325,12 @@ def jtag_step():
                 debug_spew(cur_leg)
                 phy_sync(0,1)
                 state = JtagState.SELECT_SCAN
+            else:
+                phy_sync(0, 0)        
+                state = JtagState.RUN_TEST_IDLE
+        else:
+            phy_sync(0, 0)        
+            state = JtagState.RUN_TEST_IDLE
 
     else:
         print("Illegal state encountered!")
