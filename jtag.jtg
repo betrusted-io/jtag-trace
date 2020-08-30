@@ -1,3 +1,4 @@
+# use `-d` option to see the output. Otherwise execution is silent.
 ir, 6, 0b001001, id
 dr, 64, 0x0 
 ir, 6, 0b110010, dna
