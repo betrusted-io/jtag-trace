@@ -104,3 +104,12 @@ to speed it up substantially, but the purpose for writing the tool is
 to test the efficacy of WBSTAR mitigations). However, it's certainly
 more than sufficient to extract LUT and BRAM init data that are in
 well-known locations.
+
+There is also a `-i` command modifier which takes in a `.nky` key
+specifier file to produce encrypted readout commands. Normally this is
+not available to attackers, but was implemented as a PoC to confirm
+that an omniscient attacker that can craft any readback bitstream can
+not work around certain fuse settings. The `-p` command identifier
+also does some fuzzing around readback timings; partial disclosure of
+some non-confidential pieces of data seem possible with the right
+timing parameters, discoverable through fuzzing.
