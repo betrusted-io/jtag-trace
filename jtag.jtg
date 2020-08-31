@@ -1,4 +1,5 @@
 # use `-d` option to see the output. Otherwise execution is silent.
+rs, 0, 0
 ir, 6, 0b001001, id
 dr, 64, 0x0 
 ir, 6, 0b110010, dna
@@ -7,3 +8,5 @@ ir, 6, 0b110011, user
 dr, 32, 0x0 
 ir, 6, 0b110001, key
 dr, 256, 0x0
+ir, 6, 0b110100, cntl
+dr, 14, 0x0
