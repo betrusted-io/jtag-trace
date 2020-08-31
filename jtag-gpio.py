@@ -377,10 +377,13 @@ def do_bitstream(ifile):
 
         config_data = bin(int.from_bytes(binfile[position:], byteorder='big'))[2:]
         
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
         jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+        jtag_legs.append([JtagLeg.DL, '0', 'initdelay'])
         jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
