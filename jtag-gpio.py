@@ -614,8 +614,10 @@ def do_wbstar(ifile, offset):
                        while len(jtag_legs):
                           jtag_next()
 
-                    
-                       print("Recovered word at {}: {}".format(ro_fuzz, hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                       if use_fuzzer:
+                           print("Read command offset {} recovered word: {}".format(str(ro_fuzz), hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                       else:
+                           logging.debug("Recovered word at %s: %s", str(ro_fuzz), hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')))
                        recovered[3-word_index] = readdata
                        block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
 
