@@ -22,6 +22,7 @@ class JtagState(Enum):
     SELECT_IR_SCAN = 9
 
 state = JtagState.RUN_TEST_IDLE
+last_ir = ''
 
 def decode_ir(ir):
     if ir == 0b100110:
@@ -103,8 +104,9 @@ def debug_jtag(jtag_trace, index=0):
 
 
 def format_output(jtag_trace, cycle, departing_index, pause, loopbacks, leg, reg_in, reg_out):
+    global last_ir
     #            if len(reg_in) < 6:
-    #debug_jtag(jtag_trace, departing_index)
+    debug_jtag(jtag_trace, departing_index)
 
     if pause > 0 | loopbacks > 0:
         print('Pauses: ', str(pause), '; loopbacks: ', str(loopbacks))
@@ -114,7 +116,11 @@ def format_output(jtag_trace, cycle, departing_index, pause, loopbacks, leg, reg
         print('Host->IR: ', end='')
 
     ir = 0
-    for bit in reversed(reg_in):  # this assumes data appears on JTAG TDI in LSB-first order
+    if last_ir != 'CFG_IN' and last_ir != 'CFG_OUT':
+        r = reversed(reg_in)
+    else:
+        r = reg_in
+    for bit in r:
         ir <<= 1
         if bit:
             print('1', end='')
@@ -123,8 +129,12 @@ def format_output(jtag_trace, cycle, departing_index, pause, loopbacks, leg, reg
             print('0', end='')
     if leg == JtagLeg.IR:
         print(' (', decode_ir(ir), ')', end='')
+        last_ir = decode_ir(ir)
     else:
-        print(' (', hex(ir), ')', end='')
+        if last_ir != 'CFG_IN' and last_ir != 'CFG_OUT':
+            print(' (', hex(ir), ')', end='')
+        else:
+            print(' (', hex(ir), ')', end='')
     if cycle:
         print(" ({:.3f}".format(cycle['time'] * 1000), 'ms)', end='')
     print(' ')
@@ -134,7 +144,11 @@ def format_output(jtag_trace, cycle, departing_index, pause, loopbacks, leg, reg
     else:
         print('IR->Host: ', end='')
     reg = 0
-    for bit in reversed(reg_out):
+    if last_ir != 'CFG_IN' and last_ir != 'CFG_OUT':
+        r = reversed(reg_out)
+    else:
+        r = reg_out
+    for bit in r:
         reg <<= 1
         if bit:
             print('1', end='')
@@ -142,7 +156,10 @@ def format_output(jtag_trace, cycle, departing_index, pause, loopbacks, leg, reg
         else:
             print('0', end='')
     if leg == JtagLeg.DR:
-        print(' (', hex(reg), ')', end='')
+        if last_ir != 'CFG_IN' and last_ir != 'CFG_OUT':
+            print(' (', hex(reg), ')', end='')
+        else:
+            print(' (', hex(reg), ') *reversed', end='')
     print(' ')
 
 # take a trace and attempt to extract IR, DR values
@@ -304,7 +321,7 @@ def main():
 
                 # store the packet if a new one is found, and create a new packet
                 #print("{}, {}, {}".format(float(row[0]), float(last_time), float(row[0]) > (float(last_time) + 10e-6)))
-                if float(row[0]) > (float(last_time) + 100.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
+                if float(row[0]) > (float(last_time) + 10.0e-6):  # greater than 350us "gap" is a heuristic for the start of a new JTAG series
                     jtag_packets += [{'start' : last_series, 'trace' : jtag_trace}]
                     last_series = float(row[0])
                     jtag_trace = []

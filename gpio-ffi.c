@@ -91,3 +91,27 @@ int jtag_prog(char *bitstream, unsigned int gpio) {
 
   return 0; // we ignore TDO for speed
 }
+
+void jtag_prog_rbk(char *bitstream, unsigned int gpio, char *readback) {
+
+  GPIO_CLR = 1 << TMS_PIN; // TMS is known to be zero for this operation
+  int i = 0;
+  GPIO_CLR = 1 << TCK_PIN;
+  while(bitstream[i] != '\0') {
+    if(bitstream[i] == '1')
+      GPIO_SET = 1 << TDI_PIN;
+    else
+      GPIO_CLR = 1 << TDI_PIN;
+
+    GPIO_SET = 1 << TCK_PIN;
+    GPIO_CLR = 1 << TCK_PIN;
+
+    if (GPIO_LVL & (1 << TDO_PIN)) {
+       readback[i] = '1';
+    } else {
+       readback[i] = '0';
+    }
+
+    i++;
+  }
+}

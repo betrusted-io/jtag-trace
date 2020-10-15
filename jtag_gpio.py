@@ -16,6 +16,8 @@ from Crypto.Cipher import AES
 
 from enum import Enum
 
+from serialflash import Mx25lFlashDevice
+
 from cffi import FFI
 try:
     from gpioffi.lib import pi_mmio_init
@@ -26,6 +28,7 @@ except:
     exit(1)
 from gpioffi.lib import jtag_pins
 from gpioffi.lib import jtag_prog
+from gpioffi.lib import jtag_prog_rbk
 
 TCK_pin = 4
 TMS_pin = 17
@@ -42,6 +45,7 @@ class JtagLeg(Enum):
     IRD = 6  # transition to IR directly
     DRC = 7  # DR for config: MSB-to-LSB order, and use fast protocols
     DRR = 8  # DR for recovery: print out the value returned in non-debug modes
+    DRS = 9  # DR for SPI: MSB-to-LSB order, use fast protocols, but also readback data
 
 class JtagState(Enum):
     TEST_LOGIC_RESET = 0
@@ -155,7 +159,7 @@ def decode_ir(ir):
 
 def debug_spew(cur_leg):
     
-    if cur_leg[0] != JtagLeg.DRC:
+    if not((cur_leg[0] == JtagLeg.DRC) or (cur_leg[0] == JtagLeg.DRS)):
         logging.debug("start: %s (%s) / %s", str(cur_leg), str(decode_ir(int(cur_leg[1],2))), str(cur_leg[2]) )
     else:
         logging.debug("start: %s config data of length %s", cur_leg[0], str(len(cur_leg[1])))
@@ -184,9 +188,9 @@ def jtag_step():
     elif state == JtagState.RUN_TEST_IDLE:
         if len(cur_leg):
             # logging.debug(cur_leg[0])
-            if cur_leg[0] == JtagLeg.DR or cur_leg[0] == JtagLeg.DRC or cur_leg[0] == JtagLeg.DRR:
+            if cur_leg[0] == JtagLeg.DR or cur_leg[0] == JtagLeg.DRC or cur_leg[0] == JtagLeg.DRR or cur_leg[0] == JtagLeg.DRS:
                 phy_sync(0, 1)
-                if cur_leg[0] == JtagLeg.DRR:
+                if cur_leg[0] == JtagLeg.DRR or cur_leg[0] == JtagLeg.DRS:
                     readout = True
                 else:
                     readout = False
@@ -244,23 +248,51 @@ def jtag_step():
         state = JtagState.SHIFT
 
     elif state == JtagState.SHIFT:
-        if cur_leg[0] == JtagLeg.DRC:
-            if compat:
-                for bit in cur_leg[1][:-1]:
-                   if bit == '1':
-                      GPIO.output( (TCK_pin, TDI_pin), (0, 1) )
-                      GPIO.output( (TCK_pin, TDI_pin), (1, 1) )
-                   else:
-                      GPIO.output( (TCK_pin, TDI_pin), (0, 0) )
-                      GPIO.output( (TCK_pin, TDI_pin), (1, 0) )
-            else:
-                bytestr = bytes(cur_leg[1][:-1], 'utf-8')
-                ffi = FFI()
-                ffistr = ffi.new("char[]", bytestr)
-                keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
-                jtag_prog(ffistr, gpio_pointer)
-                GPIO.output( TCK_pin, 0 ) # restore this to 0, as jtag_prog() leaves TCK high when done
-                
+        if cur_leg[0] == JtagLeg.DRC or cur_leg[0] == JtagLeg.DRS:
+            if cur_leg[0] == JtagLeg.DRC: # duplicate code because we want speed (eliminating TDO readback is significant speedup)
+                if compat:
+                    GPIO.output((TCK_pin, TDI_pin), (0, 1))
+                    for bit in cur_leg[1][:-1]:
+                        if bit == '1':
+                            GPIO.output((TCK_pin, TDI_pin), (1, 1))
+                            GPIO.output((TCK_pin, TDI_pin), (0, 1))
+                        else:
+                            GPIO.output((TCK_pin, TDI_pin), (1, 0))
+                            GPIO.output((TCK_pin, TDI_pin), (0, 0))
+                else:
+                    bytestr = bytes(cur_leg[1][:-1], 'utf-8')
+                    ffi = FFI()
+                    ffistr = ffi.new("char[]", bytestr)
+                    keepalive.append(ffistr)  # need to make sure the lifetime of the string is long enough for the call
+                    jtag_prog(ffistr, gpio_pointer)
+                    GPIO.output(TCK_pin, 0)  # restore this to 0, as jtag_prog() leaves TCK high when done
+            else:  # jtagleg is DRS -- duplicate code, as TDO readback slows things down significantly
+                if compat:
+                    GPIO.output((TCK_pin, TDI_pin), (0, 1))
+                    for bit in cur_leg[1][:-1]:
+                       if bit == '1':
+                          GPIO.output( (TCK_pin, TDI_pin), (1, 1) )
+                          GPIO.output( (TCK_pin, TDI_pin), (0, 1) )
+                       else:
+                          GPIO.output( (TCK_pin, TDI_pin), (1, 0) )
+                          GPIO.output( (TCK_pin, TDI_pin), (0, 0) )
+                    tdo = GPIO.input(TDO_pin)
+                    if tdo == 1 :
+                        tdo_vect = '1' + tdo_vect
+                    else:
+                        tdo_vect = '0' + tdo_vect
+                else:
+                    bytestr = bytes(cur_leg[1][:-1], 'utf-8')
+                    tdo_temp = '0'*len(cur_leg[1][:-1]) # initialize space for tdo_vect
+                    retstr = bytes(tdo_temp, 'utf-8')
+                    ffi = FFI()
+                    ffistr = ffi.new("char[]", bytestr)
+                    ffiret = ffi.new("char[]", retstr)
+                    keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
+                    keepalive.append(ffiret)
+                    jtag_prog_rbk(ffistr, gpio_pointer, ffiret)
+                    tdo_vect = ffi.string(ffiret)
+
             state = JtagState.SHIFT
 
             if cur_leg[-1:] == '1':
@@ -268,8 +300,11 @@ def jtag_step():
             else:
                 tdi = 0
             cur_leg = ''
-            phy_sync(tdi, 1) # skip recording the output
-            tdo_vect = '0'
+            tdo = phy_sync(tdi, 1)
+            if tdo == 1:
+                tdo_vect = '1' + tdo_vect
+            else:
+                tdo_vect = '0' + tdo_vect
             state = JtagState.EXIT1
             logging.debug('leaving config')
             
@@ -371,21 +406,73 @@ def jtag_next():
         while state != JtagState.TEST_LOGIC_RESET and state != JtagState.RUN_TEST_IDLE:
             jtag_step()
 
-def do_bitstream(ifile):
+def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True):
     global jtag_legs
-    
+
+    # first load the jtagspi bitstream
+    jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
+    do_bitstream(jtagspi_bitstream)
+
+    virtualspi = SpiPort(1)
+    jedec_cmd = bytes((0x9f,))
+    id = virtualspi.exchange(jedec_cmd, 3)
+    print("Jedec ID: {}", id.hex())
+    #virtualflash = Mx25lFlashDevice(virtualspi)
+    return
+
     with open(ifile, "rb") as f:
         binfile = f.read()
 
         position = 0
         while position < len(binfile):
-            sync = int.from_bytes(binfile[position:position+4], 'big')
+            sync = int.from_bytes(binfile[position:position + 4], 'big')
+            if sync == 0xaa995566:
+                break
+            position = position + 1
+
+        program_data = binfile[position:]
+
+        virtualspi = SpiPort(1)
+        virtualflash = Mx25lFlashDevice(virtualspi)
+        virtualflash.erase(address, len(program_data))
+        virtualflash.write(address, program_data)
+        if verify:
+            read_data = virtualflash.read(address, len(program_data))
+            failures = 0
+            for i in range(len(program_data)):
+                if i < len(read_data):
+                    if read_data[i] != program_data[i]:
+                        print("Verify fail at 0x{:08x}, want 0x{:02x}, got 0x{:02x}", i, program_data[i], read_data[i])
+                        failures += 1
+                else:
+                    print("Verify failure: readback data is shorter than programmed data")
+                    failures += 1
+                    break
+                if failures > 64:
+                    print("Too many failures, terminating verification.")
+                    break
+
+            if failures == 0:
+                print("Programming verification succeeded")
+
+        print("Programming concluded")
+
+
+def do_bitstream(ifile):
+    global jtag_legs
+
+    with open(ifile, "rb") as f:
+        binfile = f.read()
+
+        position = 0
+        while position < len(binfile):
+            sync = int.from_bytes(binfile[position:position + 4], 'big')
             if sync == 0xaa995566:
                 break
             position = position + 1
 
         config_data = int_to_binstr(int.from_bytes(binfile[position:], byteorder='big'))
-        
+
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
@@ -400,6 +487,7 @@ def do_bitstream(ifile):
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+
 
 """
 Reverse the order of bits in a word that is bitwidth bits wide
@@ -705,6 +793,18 @@ def main():
     parser.add_argument(
         "-p", "--phuzz", help="Fuzz readout addresses on wbstar exploit with encrypted readout commands", default=False, action="store_true"
     )
+    parser.add_argument(
+        "-s", "--spi-mode", help="Program a SPI memory using JTAGSPI", default=False
+    )
+    parser.add_argument(
+        "-j", "--jtagspi-variant", help="Use the specified jtagspi bitstream variant, defaults to xc7s50", type=str, default="xc7s50"
+    )
+    parser.add_argument(
+        "-a", "--address", help="Address to load code into SPI memory, defaults to 0", default=0
+    )
+    parser.add_argument(
+        "-n", "--no-verify", help="When selected, skips verification of SPI memory", default=False, action="store_true"
+    )
     args = parser.parse_args()
     if args.debug:
        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -773,10 +873,16 @@ def main():
         GPIO.cleanup()
         exit(0)
         
-    if args.bitstream:
+    if args.bitstream and not args.spi_mode:
         do_bitstream(ifile)
         while len(jtag_legs):
            jtag_next()
+        GPIO.cleanup()
+        exit(0)
+    elif args.bitstream and args.spi_mode:
+        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify)
+        while len(jtag_legs):
+            jtag_next()
         GPIO.cleanup()
         exit(0)
         
@@ -803,7 +909,8 @@ def main():
                 value = int(row[2])
 
             if (chain != 'dr') & (chain != 'ir') & (chain != 'rs') & (chain != 'dl') & \
-               (chain != 'id') & (chain != 'irp') & (chain != 'ird') & (chain != 'drc') & (chain != 'drr'):
+               (chain != 'id') & (chain != 'irp') & (chain != 'ird') & (chain != 'drc') & \
+               (chain != 'drr') & (chain != 'drs'):
                 print('unknown chain type ', chain, ' aborting!')
                 GPIO.cleanup()
                 exit(1)
@@ -823,6 +930,8 @@ def main():
                     code = JtagLeg.DRC
                 elif chain == 'drr':
                     code = JtagLeg.DRR
+                elif chain == 'drs':
+                    code = JtagLeg.DRS
                 elif chain == 'ir':
                     code = JtagLeg.IR
                 elif chain == 'ird':
@@ -845,6 +954,193 @@ def main():
 
     GPIO.cleanup()
     exit(0)
+
+from typing import Any, Iterable, Mapping, Optional, Set, Union
+def int_to_bytes(x: int) -> bytes:
+    return x.to_bytes((x.bit_length() + 7) // 8, 'big')
+
+class SpiPort:
+    """SPI port
+       An SPI port is never instanciated directly: use
+       :py:meth:`SpiController.get_port()` method to obtain an SPI port.
+       Example:
+       >>> ctrl = SpiController()
+       >>> ctrl.configure('ftdi://ftdi:232h/1')
+       >>> spi = ctrl.get_port(1)
+       >>> spi.set_frequency(1000000)
+       >>> # send 2 bytes
+       >>> spi.exchange([0x12, 0x34])
+       >>> # send 2 bytes, then receive 2 bytes
+       >>> out = spi.exchange([0x12, 0x34], 2)
+       >>> # send 2 bytes, then receive 4 bytes, manage the transaction
+       >>> out = spi.exchange([0x12, 0x34], 2, True, False)
+       >>> out.extend(spi.exchange([], 2, False, True))
+    """
+
+    def __init__(self, cs: int, cs_hold: int = 3,
+                 spi_mode: int = 0):
+        self._frequency = 1000000  # bogus value for API compatibility
+        self._cs = cs
+        self._cs_hold = cs_hold
+        self.set_mode(spi_mode)
+
+    def exchange(self, out: Union[bytes, bytearray, Iterable[int]] = b'',
+                 readlen: int = 0, start: bool = True, stop: bool = True,
+                 duplex: bool = False, droptail: int = 0) -> bytes:
+        global jtag_legs, tdo_vect
+        """Perform an exchange or a transaction with the SPI slave
+           :param out: data to send to the SPI slave, may be empty to read out
+                       data from the slave with no write.
+           :param readlen: count of bytes to read out from the slave,
+                       may be zero to only write to the slave
+           :param start: whether to start an SPI transaction, i.e.
+                        activate the /CS line for the slave. Use False to
+                        resume a previously started transaction
+           :param stop: whether to desactivete the /CS line for the slave.
+                       Use False if the transaction should complete with a
+                       further call to exchange()
+           :param duplex: perform a full-duplex exchange (vs. half-duplex),
+                          i.e. bits are clocked in and out at once.
+           :param droptail: ignore up to 7 last bits (for non-byte sized SPI
+                               accesses)
+           :return: an array of bytes containing the data read out from the
+                    slave
+        """
+
+        """
+            A JTAG2SPI transfer consists of:
+            1. an arbitrary number of 0 bits (from BYPASS registers in front of the
+               JTAG2SPI DR)
+            2. a marker bit (1) indicating the start of the JTAG2SPI transaction
+            3. 32 bits (big endian) describing the length of the SPI transaction
+            4. a number of SPI clock cycles (corresponding to 3.) with CS_N asserted
+            5. an arbitrary number of cycles (to shift MISO/TDO data through subsequent
+               BYPASS registers)
+               
+            Notes:
+            * The JTAG2SPI DR is 1 bit long (due to different sampling edges of
+              {MISO,MOSI}/{TDO,TDI}).
+            * MOSI is TDI with half a cycle delay.
+            * TDO is MISO with half a cycle delay.
+            * CAPTURE-DR needs to be performed before SHIFT-DR on the BYPASSed TAPs in
+              JTAG chain to clear the BYPASS registers to 0.                       
+        """
+        exchange_data = '000000001' + \
+                        int_to_binstr((len(out) + readlen)*8) + \
+                        int_to_binstr(int.from_bytes(out, byteorder='big')) + \
+                        '0'*(readlen*8) + \
+                        '00000000'
+
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+        jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+        # sync state of chain
+        while len(jtag_legs):
+            jtag_next()
+        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
+        jtag_legs.append([JtagLeg.DRS, exchange_data, 'exchange_data'])
+        # extract the returned data here
+        while len(jtag_legs):
+            jtag_next()
+
+        # TODO: fix global reacharound to tdo_vect, this breaks an assumption about getting data from jtag_results
+        return int_to_bytes(int(tdo_vect[len(out)*8:], 2))
+
+    def read(self, readlen: int = 0, start: bool = True, stop: bool = True,
+             droptail: int = 0) -> bytes:
+        """Read out bytes from the slave
+           :param readlen: count of bytes to read out from the slave,
+                           may be zero to only write to the slave
+           :param start: whether to start an SPI transaction, i.e.
+                        activate the /CS line for the slave. Use False to
+                        resume a previously started transaction
+           :param stop: whether to desactivete the /CS line for the slave.
+                       Use False if the transaction should complete with a
+                       further call to exchange()
+           :param droptail: ignore up to 7 last bits (for non-byte sized SPI
+                               accesses)
+           :return: an array of bytes containing the data read out from the
+                    slave
+        """
+        return self.exchange([], readlen)
+
+    def write(self, out: Union[bytes, bytearray, Iterable[int]],
+              start: bool = True, stop: bool = True, droptail: int = 0) \
+        -> None:
+        """Write bytes to the slave
+           :param out: data to send to the SPI slave, may be empty to read out
+                       data from the slave with no write.
+           :param start: whether to start an SPI transaction, i.e.
+                        activate the /CS line for the slave. Use False to
+                        resume a previously started transaction
+           :param stop: whether to desactivete the /CS line for the slave.
+                        Use False if the transaction should complete with a
+                        further call to exchange()
+           :param droptail: ignore up to 7 last bits (for non-byte sized SPI
+                               accesses)
+        """
+        self.exchange(out, 0)
+        return
+
+    def flush(self) -> None:
+        global jtag_legs
+        """Force the flush of the HW FIFOs"""
+        while len(jtag_legs):
+            jtag_next()
+
+    def set_frequency(self, frequency: float):
+        """Change SPI bus frequency
+           :param float frequency: the new frequency in Hz
+        """
+        self._frequency = frequency
+
+    def set_mode(self, mode: int, cs_hold: Optional[int] = None) -> None:
+        """Set or change the SPI mode to communicate with the SPI slave.
+           :param mode: new SPI mode
+           :param cs_hold: change the /CS hold duration (or keep using previous
+                           value)
+        """
+        pass
+
+    def force_select(self, level: Optional[bool] = None,
+                     cs_hold: float = 0) -> None:
+        """Force-drive /CS signal.
+           This API is not designed for a regular usage, but is reserved to
+           very specific slave devices that require non-standard SPI
+           signalling. There are very few use cases where this API is required.
+           :param level: level to force on /CS output. This is a tri-state
+                         value. A boolean value forces the selected signal
+                         level; note that SpiPort no longer enforces that
+                         following API calls generates valid SPI signalling:
+                         use with extreme care. `None` triggers a pulse on /CS
+                         output, i.e. /CS is not asserted once the method
+                         returns, whatever the actual /CS level when this API
+                         is called.
+           :param cs_hold: /CS hold duration, as a unitless value. It is not
+                         possible to control the exact duration of the pulse,
+                         as it depends on the USB bus and the FTDI frequency.
+        """
+        raise NotImplementedError()
+
+    @property
+    def frequency(self) -> float:
+        """Return the current SPI bus block"""
+        return self._frequency
+
+    @property
+    def cs(self) -> int:
+        """Return the /CS index.
+          :return: the /CS index (starting from 0)
+        """
+        return self._cs
+
+    @property
+    def mode(self) -> int:
+        """Return the current SPI mode.
+           :return: the SPI mode
+        """
+        return 0
 
 if __name__ == "__main__":
     main()

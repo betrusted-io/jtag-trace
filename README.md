@@ -1,4 +1,4 @@
-# jtag-trace
+# jtag tools
 
 An increasingly misnamed collection of utilities to help manipulate
 JTAG and parse through recorded traces.
@@ -9,13 +9,13 @@ documented at
 https://github.com/betrusted-io/betrusted-wiki/wiki/Spartan7-JTAG-Notes
 and exported as an "event table" on the "parallel bus".
 
-Traces that match this configuration can be processed with `jtag-trace.py`
+Traces that match this configuration can be processed with `jtag_trace.py`
 to extract the sequence of JTAG commands being executed. Useful for debugging
 complicated home-rolled JTAG implementations.
 
-# jtag-gpio
+# jtag_gpio
 
-`jtag-gpio` is a collection of tools to manipulate a Xilinx JTAG port
+`jtag_gpio` is a collection of tools to manipulate a Xilinx JTAG port
 using a Raspberry Pi. The scripts were tested on a Raspberry Pi 3, but
 it has a chance of working on other versions since there is an attempt
 to detect the version and adjust GPIO block offsets accordingly. This
@@ -26,18 +26,18 @@ is about 100x slower but is pure-Python.
 
 ## FPGA Configuration
 
-`jtag-gpio.py -b` can configure an FPGA. It's reasonably fast,
+`jtag_gpio.py -b` can configure an FPGA. It's reasonably fast,
 configuring a XC7A35T in about 3 seconds on a Raspberry Pi 3 using the
 default CFFI bindings (a couple minutes using the fallback
 compatibility native Python calls only). This compares well to
 ~1 second to configure the same device using openocd. The advantage
-of `jtag-gpio.py` is that it's lightweight and easier to bundle into
+of `jtag_gpio.py` is that it's lightweight and easier to bundle into
 a distro of utilities, it's easier to extend and integrate into scripts,
 and we're not as fussy about accepting pull requests.
 
 ## JTAG Scripting
 
-`jtag-gpio.py` runs a small scripting language that can execute
+`jtag_gpio.py` runs a small scripting language that can execute
 JTAG commands. It's capable of loading commands into the IR,
 writing data into the DR, reading data from the DR, as well as
 some pseudo-commands such as wait delays, idling, and directives
@@ -94,7 +94,7 @@ readout ID codes, config status, etc.)
 If you have a copy of the encrypted binary, and an FPGA that has been fused
 with a key to decrypt it, you can recover the plantext of the binary (without
 knowing the key -- you just use the FPGA as a decryption oracle) using the
-`jtag-gpio -w` command (you also have to specify the AES block number and
+`jtag_gpio -w` command (you also have to specify the AES block number and
 the encrypted filename, see the command help).
 
 The current implementation is an "effective PoC" in that it can
