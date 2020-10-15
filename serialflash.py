@@ -443,11 +443,11 @@ class _SpiFlashDevice(SerialFlash):
         erase_size = self.get_erase_size()
         if address & (erase_size-1):
             # start address should be aligned on a subsector boundary
-            raise SerialFlashValueError('Start address not aligned on a '
+            raise SerialFlashValueError('Start address not aligned on a ' +
                                         'erase sector boundary')
         if ((length-1) & (erase_size-1)) != (erase_size-1):
             # length should be a multiple of a subsector
-            raise SerialFlashValueError('End address not aligned on a '
+            raise SerialFlashValueError('End address not aligned on a ' + 
                                         'erase sector boundary')
         if (address + length) > len(self):
             raise SerialFlashValueError('Would erase over the flash capacity')
@@ -656,6 +656,7 @@ class _Gen25FlashDevice(_SpiFlashDevice):
     def _read_status(self) -> int:
         read_cmd = bytes((self.CMD_READ_STATUS,))
         data = self._spi.exchange(read_cmd, 1)
+        print("status data len {}, data:{}".format(len(data), data.hex()))
         if len(data) != 1:
             raise SerialFlashTimeout("Unable to retrieve flash status")
         return data[0]
@@ -690,7 +691,9 @@ class _Gen25FlashDevice(_SpiFlashDevice):
                       start: int, end: int, size: int) -> None:
         """Erase one or more blocks."""
         while start < end:
+            print("  Erasing block {} of {} size".format(start // self.get_erase_size(), self.get_erase_size()))
             self._enable_write()
+            print("    status after write enable: 0x{:02x}".format(self._read_status()))
             cmd = bytes((command, (start >> 16) & 0xff,
                          (start >> 8) & 0xff, start & 0xff))
             self._spi.exchange(cmd)
@@ -937,11 +940,11 @@ class Mx25lFlashDevice(_Gen25FlashDevice):
     DEVICES = {0x9E: 'MX25D', 0x26: 'MX25E', 0x20: 'MX25E06'}
     SIZES = {0x15: 2 << 20, 0x16: 4 << 20, 0x17: 8 << 20, 0x18: 16 << 20}
     SPI_FREQ_MAX = 104  # MHz
-    TIMINGS = {'page': (0.0015, 0.003),  # 1.5/3 ms
+    TIMINGS = {'page': (0.0015, 0.0075),  # 1.5/3 ms
                'subsector': (0.300, 0.300),  # 300/300 ms
-               'hsector': (2.0, 2.0),  # 2/2 s
-               'sector': (2.0, 2.0),  # 2/2 s
-               'bulk': (32, 64),  # seconds
+               'hsector': (25.0, 2.0),  # 2/2 s
+               'sector': (25.0, 400),  # 2/2 s
+               'bulk': (150, 300),  # seconds
                'lock': (0.0015, 0.003)}  # 1.5/3 ms
     FEATURES = (SerialFlash.FEAT_SECTERASE |
                 SerialFlash.FEAT_HSECTERASE |
@@ -958,6 +961,55 @@ class Mx25lFlashDevice(_Gen25FlashDevice):
     def __init__(self, spi, jedec):
         super(Mx25lFlashDevice, self).__init__(spi)
         if not Mx25lFlashDevice.match(jedec):
+            raise SerialFlashUnknownJedec(jedec)
+        device, capacity = jedec[1:3]
+        self._size = self.SIZES[capacity]
+        self._device = self.DEVICES[device]
+
+    def __str__(self):
+        return 'Macronix %s%d %s' % \
+            (self._device, len(self) >> 17,
+             pretty_size(self._size, lim_m=1 << 20))
+
+    def unlock(self):
+        if self._device.endswith('D'):
+            unlock = self.CMD_UNLOCK
+        else:
+            unlock = self.CMD_GBULK
+        self._enable_write()
+        wcmd = bytes((unlock,))
+        self._spi.exchange(wcmd)
+        self._wait_for_completion(self.get_timings('page'))
+
+
+class Mx66umFlashDevice(_Gen25FlashDevice):
+    """Macronix MX66UM flash device implementation"""
+
+    JEDEC_ID = 0xC2
+    DEVICES = {0x80: 'MX66UM'}
+    SIZES = {0x3b: 128 << 20}
+    SPI_FREQ_MAX = 133  # MHz
+    TIMINGS = {'page': (0.00015, 0.00075),  # page program time
+               'subsector': (0.025, 0.400),  #  sector erase time
+               'sector': (0.25, 2.0),  #  block erase time
+               'bulk': (150, 300),  # chip erase time?
+               'chip': (150, 300),  # chip erase time
+               'lock': (0.0015, 0.003)}  # 1.5/3 ms (???? check this)
+    FEATURES = (SerialFlash.FEAT_SECTERASE |     # this is block
+                # SerialFlash.FEAT_SUBSECTERASE |  # this is page
+                SerialFlash.FEAT_CHIPERASE)
+    CMD_UNLOCK = 0xF3
+    CMD_GBULK = 0x98
+    CMD_RDBLOCK = 0xFB
+    CMD_RDSBLOCK = 0x3C
+    CMD_RDPLOCK = 0x3F
+    CMD_BLOCKP = 0xE2
+    CMD_SBLK = 0x36
+    CMD_PLOCK = 0x64
+
+    def __init__(self, spi, jedec):
+        super(Mx66umFlashDevice, self).__init__(spi)
+        if not Mx66umFlashDevice.match(jedec):
             raise SerialFlashUnknownJedec(jedec)
         device, capacity = jedec[1:3]
         self._size = self.SIZES[capacity]

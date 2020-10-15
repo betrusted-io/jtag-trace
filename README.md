@@ -24,6 +24,11 @@ you run it by running `build.py`. However, if you have trouble with these,
 you can always use the `-c` flag to turn on compatibility mode, which
 is about 100x slower but is pure-Python.
 
+## Dependencies
+
+The following packages (at least) are needed on an Rpi over a base raspbian install:
+   sudo apt-get install python3-dev python3-rpi.gpio python3-pip python3-cffi
+
 ## FPGA Configuration
 
 `jtag_gpio.py -b` can configure an FPGA. It's reasonably fast,

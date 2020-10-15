@@ -16,8 +16,6 @@ from Crypto.Cipher import AES
 
 from enum import Enum
 
-from serialflash import Mx25lFlashDevice
-
 from cffi import FFI
 try:
     from gpioffi.lib import pi_mmio_init
@@ -34,6 +32,7 @@ TCK_pin = 4
 TMS_pin = 17
 TDI_pin = 27  # TDI on FPGA, out for this script
 TDO_pin = 22  # TDO on FPGA, in for this script
+PRG_pin = 24
 
 class JtagLeg(Enum):
     DR = 0
@@ -62,6 +61,7 @@ state = JtagState.RUN_TEST_IDLE
 cur_leg = []
 jtag_legs = []
 tdo_vect = ''
+tdo_stash = ''
 jtag_results = []
 do_pause = False
 gpio_pointer = 0
@@ -84,6 +84,9 @@ def bytes_needed(n):
 def int_to_binstr(n):
     return bin(n)[2:].zfill(bytes_needed(n)*8)
 
+def int_to_binstr_bitwidth(n, bitwidth):
+    return bin(n)[2:].zfill(bitwidth)
+
 def phy_sync(tdi, tms):
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
 
@@ -97,6 +100,13 @@ def phy_sync(tdi, tms):
         tdo = jtag_pins(tdi, tms, gpio_pointer)
 
     return tdo
+
+def reset_fpga():
+    global PRG_pin
+
+    GPIO.output(PRG_pin, 0)
+    time.sleep(0.1)
+    GPIO.output(PRG_pin, 1)
 
 
 def decode_ir(ir):
@@ -171,7 +181,7 @@ def jtag_step():
     global cur_leg
     global jtag_legs
     global jtag_results
-    global tdo_vect
+    global tdo_vect, tdo_stash
     global do_pause
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin
     global gpio_pointer
@@ -291,7 +301,7 @@ def jtag_step():
                     keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
                     keepalive.append(ffiret)
                     jtag_prog_rbk(ffistr, gpio_pointer, ffiret)
-                    tdo_vect = ffi.string(ffiret)
+                    tdo_vect = ffi.string(ffiret).decode('utf-8')
 
             state = JtagState.SHIFT
 
@@ -335,6 +345,7 @@ def jtag_step():
                 state = JtagState.EXIT1
 
     elif state == JtagState.EXIT1:
+        tdo_stash = tdo_vect
         if do_pause:
            phy_sync(0, 0)
            state = JtagState.PAUSE
@@ -406,19 +417,18 @@ def jtag_next():
         while state != JtagState.TEST_LOGIC_RESET and state != JtagState.RUN_TEST_IDLE:
             jtag_step()
 
-def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True):
+def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=False):
+    from serialflash import Mx66umFlashDevice
     global jtag_legs
 
     # first load the jtagspi bitstream
     jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
     do_bitstream(jtagspi_bitstream)
+    if do_reset:
+        reset_fpga()
+    while len(jtag_legs):  # flush the commands from do_bitstream()
+       jtag_next()
 
-    virtualspi = SpiPort(1)
-    jedec_cmd = bytes((0x9f,))
-    id = virtualspi.exchange(jedec_cmd, 3)
-    print("Jedec ID: {}", id.hex())
-    #virtualflash = Mx25lFlashDevice(virtualspi)
-    return
 
     with open(ifile, "rb") as f:
         binfile = f.read()
@@ -431,10 +441,28 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True):
             position = position + 1
 
         program_data = binfile[position:]
-
+       
         virtualspi = SpiPort(1)
-        virtualflash = Mx25lFlashDevice(virtualspi)
-        virtualflash.erase(address, len(program_data))
+        jedec_cmd = bytes((0x9f,))
+        id = virtualspi.exchange(jedec_cmd, 3)
+        print("Jedec ID return bytes: ", id.hex())
+        virtualflash = Mx66umFlashDevice(virtualspi, id)
+        print("before erase:")
+        readback = virtualflash.read(0, 256)
+        print(readback.hex())
+        print("erasing")
+        erase_size = virtualflash.get_erase_size()
+        print("erase size: {}".format(erase_size))
+        erase_size_in_sectors = len(program_data) // erase_size
+        if len(program_data) % erase_size  != 0:
+            erase_size_in_sectors += 1
+        virtualflash.erase(address, erase_size_in_sectors * erase_size) 
+        print("after erase:")
+        readback = virtualflash.read(0, 256)
+        print(readback.hex())
+       
+        return
+
         virtualflash.write(address, program_data)
         if verify:
             read_data = virtualflash.read(address, len(program_data))
@@ -753,7 +781,7 @@ def do_wbstar(ifile, offset):
         
         
 def main():
-    global TCK_pin, TMS_pin, TDI_pin, TDO_pin
+    global TCK_pin, TMS_pin, TDI_pin, TDO_pin, PRG_pin
     global jtag_legs, jtag_results
     global gpio_pointer
     global compat
@@ -788,13 +816,16 @@ def main():
         '--tck', type=int, help="Specify TCK GPIO. Defaults to 4", default=4
     )
     parser.add_argument(
+        '--prg', type=int, help="Specify PRG (prog) GPIO. Defaults to 24", default=24
+    )
+    parser.add_argument(
         "-i", "--input-key", help="Use specified .nky file to create readout command", type=str
     )
     parser.add_argument(
         "-p", "--phuzz", help="Fuzz readout addresses on wbstar exploit with encrypted readout commands", default=False, action="store_true"
     )
     parser.add_argument(
-        "-s", "--spi-mode", help="Program a SPI memory using JTAGSPI", default=False
+        "-s", "--spi-mode", help="Program a SPI memory using JTAGSPI", default=False, action="store_true"
     )
     parser.add_argument(
         "-j", "--jtagspi-variant", help="Use the specified jtagspi bitstream variant, defaults to xc7s50", type=str, default="xc7s50"
@@ -804,6 +835,9 @@ def main():
     )
     parser.add_argument(
         "-n", "--no-verify", help="When selected, skips verification of SPI memory", default=False, action="store_true"
+    )
+    parser.add_argument(
+        "-r", "--reset-prog", help="Pull the PROG pin before initiating any commands", default=False, action="store_true"
     )
     args = parser.parse_args()
     if args.debug:
@@ -824,6 +858,9 @@ def main():
     if TMS_pin != args.tms:
         compat = True
         TMS_pin = args.tms
+    if PRG_pin != args.prg:
+        PRG_pin = args.prg
+        # prog not in FFI, so no need for compat if it changes
 
     if compat == True and args.compat == False:
         print("Compatibility mode triggered because one of tck/tdi/tdo/tms pins do not match the CFFI bindings")
@@ -847,16 +884,16 @@ def main():
 
     rev = GPIO.RPI_INFO
     if rev['P1_REVISION'] == 1:
-       gpio_pointer = pi_mmio_init(0x20000000)
+        gpio_pointer = pi_mmio_init(0x20000000)
     elif rev['P1_REVISION'] == 3 or rev['P1_REVISION'] == 2:
-       gpio_pointer = pi_mmio_init(0x3F000000)
+        gpio_pointer = pi_mmio_init(0x3F000000)
     elif rev['P1_REVISION'] == 4:
-       gpio_pointer = pi_mmio_init(0xFE000000)
+        gpio_pointer = pi_mmio_init(0xFE000000)
     else:
         print("Unknown Raspberry Pi rev, can't set GPIO base")
         compat = True
 
-    if args.bitstream:
+    if args.bitstream or args.spi_mode:
         print('Programming .bin file to FPGA:', ifile)
     elif args.wbstar:
         print('Decrypting AES blocks from file: ', ifile)
@@ -867,22 +904,31 @@ def main():
 
     GPIO.setup((TCK_pin, TMS_pin, TDI_pin), GPIO.OUT)
     GPIO.setup(TDO_pin, GPIO.IN)
+    if args.reset_prog:
+        GPIO.setup(PRG_pin, GPIO.OUT)
 
     if args.wbstar != None:
         do_wbstar(ifile, args.wbstar)
         GPIO.cleanup()
         exit(0)
         
-    if args.bitstream and not args.spi_mode:
-        do_bitstream(ifile)
-        while len(jtag_legs):
-           jtag_next()
+    if args.spi_mode: # this takes precdence over args.bitstream alone
+        if args.no_verify:
+            v = 'off'
+        else:
+            v = 'on'
+        print("Using JTAGSPI mode with variant: {} to address 0x{:08x}, verify is {}".format(args.jtagspi_variant, args.address, v))
+        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify, do_reset=args.reset_prog)
+        # do_spi_bitstream is responsible for executing its own jtag chain
         GPIO.cleanup()
         exit(0)
-    elif args.bitstream and args.spi_mode:
-        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify)
+        
+    if args.bitstream:
+        do_bitstream(ifile)
+        if args.reset_prog:
+            reset_fpga()
         while len(jtag_legs):
-            jtag_next()
+           jtag_next()
         GPIO.cleanup()
         exit(0)
         
@@ -944,6 +990,8 @@ def main():
                     jtag_legs.append([code, '%0*d' % (length, int(bin(value)[2:])), ' '])            
     # logging.debug(jtag_legs)
 
+    if args.reset_prog:
+        reset_fpga()
     while len(jtag_legs):
         # time.sleep(0.002) # give 2 ms between each command
         jtag_next()
@@ -957,7 +1005,10 @@ def main():
 
 from typing import Any, Iterable, Mapping, Optional, Set, Union
 def int_to_bytes(x: int) -> bytes:
-    return x.to_bytes((x.bit_length() + 7) // 8, 'big')
+    if x != 0:
+        return x.to_bytes((x.bit_length() + 7) // 8, 'big')
+    else:
+        return bytes(1)  # a length 1 bytes with value of 0
 
 class SpiPort:
     """SPI port
@@ -987,7 +1038,7 @@ class SpiPort:
     def exchange(self, out: Union[bytes, bytearray, Iterable[int]] = b'',
                  readlen: int = 0, start: bool = True, stop: bool = True,
                  duplex: bool = False, droptail: int = 0) -> bytes:
-        global jtag_legs, tdo_vect
+        global jtag_legs, tdo_stash
         """Perform an exchange or a transaction with the SPI slave
            :param out: data to send to the SPI slave, may be empty to read out
                        data from the slave with no write.
@@ -1025,27 +1076,33 @@ class SpiPort:
             * CAPTURE-DR needs to be performed before SHIFT-DR on the BYPASSed TAPs in
               JTAG chain to clear the BYPASS registers to 0.                       
         """
-        exchange_data = '000000001' + \
-                        int_to_binstr((len(out) + readlen)*8) + \
+        if len(out) > 0:
+           print('out: ' + out.hex())
+        exchange_data = '1' + \
+                        int_to_binstr_bitwidth((len(out) + readlen)*8, 32) + \
                         int_to_binstr(int.from_bytes(out, byteorder='big')) + \
                         '0'*(readlen*8) + \
-                        '00000000'
-
-        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-        jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
-        jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+                        '00'
+        print('exchange_data: ' + exchange_data )
+        #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        #jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
+        #jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
         # sync state of chain
-        while len(jtag_legs):
-            jtag_next()
-        jtag_legs.append([JtagLeg.RS, '0', 'reset'])
+        #while len(jtag_legs):
+        #    jtag_next()
+        #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
         jtag_legs.append([JtagLeg.DRS, exchange_data, 'exchange_data'])
         # extract the returned data here
         while len(jtag_legs):
             jtag_next()
 
-        # TODO: fix global reacharound to tdo_vect, this breaks an assumption about getting data from jtag_results
-        return int_to_bytes(int(tdo_vect[len(out)*8:], 2))
+        # TODO: fix global reacharound to tdo_stash, this breaks an assumption about getting data from jtag_results
+        if readlen > 0:
+            return_bits = tdo_stash[len(out)*8+35:]
+            return int_to_bytes(int(return_bits, 2))
+        else:
+            return b''
 
     def read(self, readlen: int = 0, start: bool = True, stop: bool = True,
              droptail: int = 0) -> bytes:
