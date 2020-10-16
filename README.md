@@ -28,6 +28,11 @@ is about 100x slower but is pure-Python.
 
 The following packages (at least) are needed on an Rpi over a base raspbian install:
    sudo apt-get install python3-dev python3-rpi.gpio python3-pip python3-cffi
+   pip3 install progressbar2 cffi
+
+This package will work best (perhaps relies upon?) a later version of cffi
+than shipped in raspbian. Older versions would take ~10ms to allocate an ffi
+object and this is punitive when doing page programs.
 
 ## FPGA Configuration
 

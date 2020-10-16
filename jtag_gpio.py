@@ -28,6 +28,16 @@ from gpioffi.lib import jtag_pins
 from gpioffi.lib import jtag_prog
 from gpioffi.lib import jtag_prog_rbk
 
+keepalive = []
+ffi = FFI()
+# maxbuf - maximum length, in bits, of a bitstream that can be handled by this script
+maxbuf = 20 * 1024 * 1024
+ffistr = ffi.new("char[]", bytes(maxbuf))
+keepalive.append(ffistr)
+ffiret = ffi.new("char[]", bytes(maxbuf))
+keepalive.append(ffiret)
+
+
 TCK_pin = 4
 TMS_pin = 17
 TDI_pin = 27  # TDI on FPGA, out for this script
@@ -65,7 +75,6 @@ tdo_stash = ''
 jtag_results = []
 do_pause = False
 gpio_pointer = 0
-keepalive = []
 compat = False
 readout = False
 readdata = 0
@@ -421,6 +430,25 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
+    virtualspi = SpiPort(1)
+
+    benchmark = False
+    if benchmark:
+       from progressbar.bar import ProgressBar
+       # issue the command to get us into writing the USER1 IR
+       jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
+       while len(jtag_legs):
+            jtag_next()
+            
+       progress = ProgressBar(min_value=0, max_value=1000).start()
+       for i in range(1000):
+           progress.update(i)
+           jedec_cmd = bytes((0x9f,))
+           id = virtualspi.exchange(jedec_cmd, 3)
+       progress.finish()
+       return
+       
+    
     # first load the jtagspi bitstream
     jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
     do_bitstream(jtagspi_bitstream)
@@ -428,6 +456,7 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         reset_fpga()
     while len(jtag_legs):  # flush the commands from do_bitstream()
        jtag_next()
+
 
 
     with open(ifile, "rb") as f:
@@ -441,45 +470,66 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
             position = position + 1
 
         program_data = binfile[position:]
-       
+
+        # issue the command to get us into writing the USER1 IR
+        jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
+        while len(jtag_legs):
+            jtag_next()
+        
         virtualspi = SpiPort(1)
         jedec_cmd = bytes((0x9f,))
         id = virtualspi.exchange(jedec_cmd, 3)
-        print("Jedec ID return bytes: ", id.hex())
+    
         virtualflash = Mx66umFlashDevice(virtualspi, id)
-        print("before erase:")
-        readback = virtualflash.read(0, 256)
-        print(readback.hex())
-        print("erasing")
+        #print("before erase:")
+        #readback = virtualflash.read(0, 256)
+        #print(readback.hex())
+        #print("erasing")
         erase_size = virtualflash.get_erase_size()
-        print("erase size: {}".format(erase_size))
+        print("Using erase block size of {} bytes".format(erase_size))
         erase_size_in_sectors = len(program_data) // erase_size
         if len(program_data) % erase_size  != 0:
             erase_size_in_sectors += 1
+
         virtualflash.erase(address, erase_size_in_sectors * erase_size) 
-        print("after erase:")
-        readback = virtualflash.read(0, 256)
-        print(readback.hex())
+        #print("after erase:")
+        #readback = virtualflash.read(0, 256)
+        #print(readback.hex())
        
-        return
-
+        #input("hit enter to continue")
         virtualflash.write(address, program_data)
+        
+        from progressbar.bar import ProgressBar
         if verify:
+            print("Reading back data for verification...")
             read_data = virtualflash.read(address, len(program_data))
-            failures = 0
-            for i in range(len(program_data)):
-                if i < len(read_data):
-                    if read_data[i] != program_data[i]:
-                        print("Verify fail at 0x{:08x}, want 0x{:02x}, got 0x{:02x}", i, program_data[i], read_data[i])
-                        failures += 1
-                else:
-                    print("Verify failure: readback data is shorter than programmed data")
-                    failures += 1
-                    break
-                if failures > 64:
-                    print("Too many failures, terminating verification.")
-                    break
+            print("Comparing data...")
+            if read_data == program_data:
+                failures = 0
+            else:
+                failures = 1
 
+            detailed_compare = False
+            if detailed_compare:
+                progress = ProgressBar(min_value=0, max_value=len(program_data), prefix='Verifying ').start()
+                failures = 0
+                for i in range(len(program_data)):
+                   if (i % (len(program_data) // 100)) == 0:
+                       progress.update(i)
+                   if i < len(read_data):
+                        if read_data[i] != program_data[i]:
+                            print("Verify fail at 0x{:08x}, want 0x{:02x}, got 0x{:02x}".format(i, program_data[i], read_data[i]))
+                            failures += 1
+                   else:
+                        print("Verify failure: readback data is shorter than programmed data")
+                        failures += 1
+                        break
+                   if failures > 64:
+                        print("Too many failures, terminating verification.")
+                        break
+
+                progress.finish()
+                
             if failures == 0:
                 print("Programming verification succeeded")
 
@@ -1010,6 +1060,12 @@ def int_to_bytes(x: int) -> bytes:
     else:
         return bytes(1)  # a length 1 bytes with value of 0
 
+# testing temporary variables, delete when done 
+memoized_exch = '100000000000000000000000000011111100111110000000000000000000000000'
+memoized_bytstr = bytes(memoized_exch[:-1], 'utf-8')
+memoized_temp = '0'*len(memoized_exch[:-1])
+memoized_retstr = bytes(memoized_temp, 'utf-8')                        
+
 class SpiPort:
     """SPI port
        An SPI port is never instanciated directly: use
@@ -1076,30 +1132,66 @@ class SpiPort:
             * CAPTURE-DR needs to be performed before SHIFT-DR on the BYPASSed TAPs in
               JTAG chain to clear the BYPASS registers to 0.                       
         """
-        if len(out) > 0:
-           print('out: ' + out.hex())
+        #if len(out) > 0:
+        #   print('out: ' + out.hex())
         exchange_data = '1' + \
-                        int_to_binstr_bitwidth((len(out) + readlen)*8, 32) + \
+                        int_to_binstr_bitwidth((len(out) + readlen)*8-1, 32) + \
                         int_to_binstr(int.from_bytes(out, byteorder='big')) + \
                         '0'*(readlen*8) + \
-                        '00'
-        print('exchange_data: ' + exchange_data )
-        #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-        #jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
-        #jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
-        # sync state of chain
-        #while len(jtag_legs):
-        #    jtag_next()
-        #jtag_legs.append([JtagLeg.RS, '0', 'reset'])
-        jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
-        jtag_legs.append([JtagLeg.DRS, exchange_data, 'exchange_data'])
-        # extract the returned data here
-        while len(jtag_legs):
-            jtag_next()
+                        '0'
+        
+        global ffi, ffistr, ffiret, maxbuf
+        unroll = True
+        if unroll:
+            keepalive = []
+            
+            phy_sync(0, 1)
+            phy_sync(0, 0)
+            phy_sync(0, 0)
+            tdo_vect = ''
+            bytestr = bytes(exchange_data[:-1], 'utf-8')
+            #tdo_temp = '0'*len(exchange_data[:-1]) # initialize space for tdo_vect
+            #retstr = bytes(tdo_temp, 'utf-8')
+            
+            #ffistr = ffi.new("char[]", bytestr)
+            #ffiret = ffi.new("char[]", retstr) 
+            #keepalive.append(ffistr) # need to make sure the lifetime of the string is long enough for the call
+            #keepalive.append(ffiret)
+
+            # clear the ffi memory before using it
+            ffi.memmove(ffistr, bytes(len(exchange_data) + 1), len(exchange_data) + 1)
+            ffi.memmove(ffiret, bytes(len(exchange_data) + 1), len(exchange_data) + 1)
+            
+            ffi.memmove(ffistr, bytestr, len(bytestr))
+            
+            jtag_prog_rbk(ffistr, gpio_pointer, ffiret)
+
+            tdo_vect = ffi.string(ffiret).decode('utf-8')
+
+            if exchange_data[-1:] == '1':
+                tdi = 1
+            else:
+                tdi = 0
+            tdo = phy_sync(tdi, 1)
+            if tdo == 1:
+                tdo_vect = '1' + tdo_vect
+            else:
+                tdo_vect = '0' + tdo_vect
+                
+            tdo_stash = tdo_vect
+            #print("tdo_stash: " + tdo_stash)
+            phy_sync(0, 1)        
+            phy_sync(0, 0)        
+       
+        else:
+            jtag_legs.append([JtagLeg.DRS, exchange_data, 'exchange_data'])
+            # extract the returned data here
+            while len(jtag_legs):
+                jtag_next()
 
         # TODO: fix global reacharound to tdo_stash, this breaks an assumption about getting data from jtag_results
         if readlen > 0:
-            return_bits = tdo_stash[len(out)*8+35:]
+            return_bits = tdo_stash[len(out)*8+34:]
             return int_to_bytes(int(return_bits, 2))
         else:
             return b''

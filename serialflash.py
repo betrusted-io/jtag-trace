@@ -640,6 +640,8 @@ class _Gen25FlashDevice(_SpiFlashDevice):
     def write(self, address: int,
               data: Union[bytes, bytearray, Iterable[int]]) -> None:
         """Write a sequence of bytes, starting at the specified address."""
+        from progressbar.bar import ProgressBar
+        
         length = len(data)
         if address+length > len(self):
             raise SerialFlashValueError('Cannot fit in flash area')
@@ -647,16 +649,19 @@ class _Gen25FlashDevice(_SpiFlashDevice):
             data = bytes(data)
         pos = 0
         page_size = self.get_size('page')
+        progress = ProgressBar(min_value=0, max_value=length, prefix='Programming ').start()
         while pos < length:
+            progress.update(pos)
             size = min(length-pos, page_size)
             self._write(address, data[pos:pos+size])
             address += size
             pos += size
+        progress.finish()
 
     def _read_status(self) -> int:
         read_cmd = bytes((self.CMD_READ_STATUS,))
         data = self._spi.exchange(read_cmd, 1)
-        print("status data len {}, data:{}".format(len(data), data.hex()))
+        #print("status data len {}, data:{}".format(len(data), data.hex()))
         if len(data) != 1:
             raise SerialFlashTimeout("Unable to retrieve flash status")
         return data[0]
@@ -690,15 +695,17 @@ class _Gen25FlashDevice(_SpiFlashDevice):
     def _erase_blocks(self, command: int, times: Tuple[float, float],
                       start: int, end: int, size: int) -> None:
         """Erase one or more blocks."""
+        from progressbar.bar import ProgressBar
+        progress = ProgressBar(min_value=start, max_value=end, prefix='Erasing ').start()
         while start < end:
-            print("  Erasing block {} of {} size".format(start // self.get_erase_size(), self.get_erase_size()))
+            progress.update(start)
             self._enable_write()
-            print("    status after write enable: 0x{:02x}".format(self._read_status()))
             cmd = bytes((command, (start >> 16) & 0xff,
                          (start >> 8) & 0xff, start & 0xff))
             self._spi.exchange(cmd)
             self._wait_for_completion(times)
             start += size
+        progress.finish()
 
     @classmethod
     def _is_busy(cls, status: int) -> bool:
@@ -989,7 +996,7 @@ class Mx66umFlashDevice(_Gen25FlashDevice):
     DEVICES = {0x80: 'MX66UM'}
     SIZES = {0x3b: 128 << 20}
     SPI_FREQ_MAX = 133  # MHz
-    TIMINGS = {'page': (0.00015, 0.00075),  # page program time
+    TIMINGS = {'page': (0.00015, 0.030),  # page program time
                'subsector': (0.025, 0.400),  #  sector erase time
                'sector': (0.25, 2.0),  #  block erase time
                'bulk': (150, 300),  # chip erase time?

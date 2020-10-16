@@ -105,6 +105,7 @@ void jtag_prog_rbk(char *bitstream, unsigned int gpio, char *readback) {
 
     GPIO_SET = 1 << TCK_PIN;
     GPIO_CLR = 1 << TCK_PIN;
+    GPIO_CLR = 1 << TCK_PIN; // need extra hold time
 
     if (GPIO_LVL & (1 << TDO_PIN)) {
        readback[i] = '1';
