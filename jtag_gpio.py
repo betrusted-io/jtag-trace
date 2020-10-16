@@ -426,7 +426,7 @@ def jtag_next():
         while state != JtagState.TEST_LOGIC_RESET and state != JtagState.RUN_TEST_IDLE:
             jtag_step()
 
-def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=False):
+def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=False, raw_binary=False):
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
@@ -463,11 +463,12 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         binfile = f.read()
 
         position = 0
-        while position < len(binfile):
-            sync = int.from_bytes(binfile[position:position + 4], 'big')
-            if sync == 0xaa995566:
-                break
-            position = position + 1
+        if raw_binary == False:
+            while position < len(binfile):
+                sync = int.from_bytes(binfile[position:position + 4], 'big')
+                if sync == 0xaa995566:
+                    break
+                position = position + 1
 
         program_data = binfile[position:]
 
@@ -490,6 +491,7 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         erase_size_in_sectors = len(program_data) // erase_size
         if len(program_data) % erase_size  != 0:
             erase_size_in_sectors += 1
+        print("Using erase block size of {} bytes, erasing {} blocks from 0x{:08x} to 0x{:08x} (rounded up from 0x{:08x})".format(erase_size, erase_size_in_sectors, address, address + erase_size_in_sectors * erase_size, address + len(program_data)))
 
         virtualflash.erase(address, erase_size_in_sectors * erase_size) 
         #print("after erase:")
@@ -828,7 +830,10 @@ def do_wbstar(ifile, offset):
                   block[3-word_index] = int.from_bytes(bitflip(readdata.to_bytes(4, byteorder='big')), byteorder='big')
 
         print('AES block {} is 0x{:08x}{:08x}{:08x}{:08x}'.format(offset, block[0], block[1], block[2], block[3]))
-        
+
+# python sux
+def auto_int(x):
+    return int(x, 0)
         
 def main():
     global TCK_pin, TMS_pin, TDI_pin, TDO_pin, PRG_pin
@@ -837,12 +842,17 @@ def main():
     global compat
     global use_key, nky_key, nky_iv, nky_hmac, use_fuzzer
 
+    GPIO.setwarnings(False)
+    
     parser = argparse.ArgumentParser(description="Drive JTAG via Rpi GPIO")
     parser.add_argument(
         "-f", "--file", required=True, help="file containing jtag command list or bitstream", type=str
     )
     parser.add_argument(
-        "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set"
+        "-b", "--bitstream", default=False, action="store_true", help="input file is a bitstream, not a JTAG command set (mutually exclusive with --raw-binary)"
+    )
+    parser.add_argument(
+        "--raw-binary", default=False, action="store_true", help="input file is a raw binary, not a JTAG command set (mutually exclusive with -b)"
     )
     parser.add_argument(
         "-w", "--wbstar", help="Decode one AES block using WBSTAR exploit. Offset is specified in units of 128-bit blocks.", type=int
@@ -881,7 +891,7 @@ def main():
         "-j", "--jtagspi-variant", help="Use the specified jtagspi bitstream variant, defaults to xc7s50", type=str, default="xc7s50"
     )
     parser.add_argument(
-        "-a", "--address", help="Address to load code into SPI memory, defaults to 0", default=0
+        "-a", "--address", help="Address to load code into SPI memory, defaults to 0", type=auto_int, default=0
     )
     parser.add_argument(
         "-n", "--no-verify", help="When selected, skips verification of SPI memory", default=False, action="store_true"
@@ -892,6 +902,10 @@ def main():
     args = parser.parse_args()
     if args.debug:
        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+
+    if args.bitstream and args.raw_binary:
+        print("Can't specify both --bitstream and --raw-binary at the same time")
+        exit(1)
                 
     ifile = args.file
     compat = args.compat
@@ -943,7 +957,7 @@ def main():
         print("Unknown Raspberry Pi rev, can't set GPIO base")
         compat = True
 
-    if args.bitstream or args.spi_mode:
+    if args.bitstream or args.spi_mode or args.raw_binary:
         print('Programming .bin file to FPGA:', ifile)
     elif args.wbstar:
         print('Decrypting AES blocks from file: ', ifile)
@@ -962,13 +976,13 @@ def main():
         GPIO.cleanup()
         exit(0)
         
-    if args.spi_mode: # this takes precdence over args.bitstream alone
+    if args.spi_mode or args.raw_binary: # this takes precdence over args.bitstream alone
         if args.no_verify:
             v = 'off'
         else:
             v = 'on'
-        print("Using JTAGSPI mode with variant: {} to address 0x{:08x}, verify is {}".format(args.jtagspi_variant, args.address, v))
-        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify, do_reset=args.reset_prog)
+        print("Using JTAGSPI mode with variant '{}', to address 0x{:08x}, verify is {}".format(args.jtagspi_variant, args.address, v))
+        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify, do_reset=args.reset_prog, raw_binary=args.raw_binary)
         # do_spi_bitstream is responsible for executing its own jtag chain
         GPIO.cleanup()
         exit(0)

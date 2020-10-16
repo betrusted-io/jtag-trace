@@ -649,7 +649,7 @@ class _Gen25FlashDevice(_SpiFlashDevice):
             data = bytes(data)
         pos = 0
         page_size = self.get_size('page')
-        progress = ProgressBar(min_value=0, max_value=length, prefix='Programming ').start()
+        progress = ProgressBar(min_value=pos, max_value=length, prefix='Programming ').start()
         while pos < length:
             progress.update(pos)
             size = min(length-pos, page_size)
