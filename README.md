@@ -27,8 +27,11 @@ is about 100x slower but is pure-Python.
 ## Dependencies
 
 The following packages (at least) are needed on an Rpi over a base raspbian install:
+
+```
    sudo apt-get install python3-dev python3-rpi.gpio python3-pip python3-cffi
    pip3 install progressbar2 cffi
+```
 
 This package will work best (perhaps relies upon?) a later version of cffi
 than shipped in raspbian. Older versions would take ~10ms to allocate an ffi
@@ -44,6 +47,24 @@ compatibility native Python calls only). This compares well to
 of `jtag_gpio.py` is that it's lightweight and easier to bundle into
 a distro of utilities, it's easier to extend and integrate into scripts,
 and we're not as fussy about accepting pull requests.
+
+## SPI ROM burning
+
+`jtag_gpio.py --bitstream --spi-mode` or `jtag_gpio.py --raw_binary` can
+be used to write a bitstream or a raw binary file to a SPI ROM using
+the [bscan_spi_bitstreams](https://github.com/quartiq/bscan_spi_bitstreams)
+library. The SPI ROM protocols were adapted from [pyspiflash](https://github.com/eblot/pyspiflash)
+but integrated directly in because the PHY isn't an FTDI, it's GPIO on
+a Raspberry Pi and also significant modifications are expected to
+support the 4-word addressing in the future required by the SPIROM.
+
+The routines are competitive in speed with openocd, and allows us
+to get rid of the OpenOCD dependency, with the faustian bargain
+of having to deal with a bunch of non-default Python dependencies.
+The OpenOCD scripts are left behind in case it turns out that going
+the route of Python dependencies was a bad choice compared to going
+the route of pulling and building OpenOCD from source to apply
+specific patches that allow it to work in our configuration.
 
 ## JTAG Scripting
 
