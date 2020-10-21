@@ -19,11 +19,12 @@ from enum import Enum
 from cffi import FFI
 try:
     from gpioffi.lib import pi_mmio_init
-except:
-    print('Note: FFI library missing, rebuilding...')
+except ImportError as err:
+    print('Module not found ({}), attempting to rebuild...'.format(err))
     subprocess.call(['python3', 'build.py'])
     print('Please try the command again.')
     exit(1)
+
 from gpioffi.lib import jtag_pins
 from gpioffi.lib import jtag_prog
 from gpioffi.lib import jtag_prog_rbk
