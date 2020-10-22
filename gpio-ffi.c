@@ -106,8 +106,11 @@ void jtag_prog_rbk(char *bitstream, unsigned int gpio, char *readback) {
     GPIO_SET = 1 << TCK_PIN; // clock needs stretching on the rpi4
     GPIO_SET = 1 << TCK_PIN;
     GPIO_SET = 1 << TCK_PIN;
+    GPIO_SET = 1 << TCK_PIN;
     
-    GPIO_CLR = 1 << TCK_PIN; // need extra hold time
+    GPIO_CLR = 1 << TCK_PIN; // meet hold time
+    GPIO_CLR = 1 << TCK_PIN;
+    GPIO_CLR = 1 << TCK_PIN;
     GPIO_CLR = 1 << TCK_PIN;
 
     if (GPIO_LVL & (1 << TDO_PIN)) {
