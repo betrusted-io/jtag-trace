@@ -503,7 +503,7 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         virtualflash.write(address, program_data)
         
         from progressbar.bar import ProgressBar
-        if verify:
+        if verify == True:
             print("Reading back data for verification...")
             read_data = virtualflash.read(address, len(program_data))
             print("Comparing data...")
@@ -980,10 +980,12 @@ def main():
     if args.spi_mode or args.raw_binary: # this takes precdence over args.bitstream alone
         if args.no_verify:
             v = 'off'
+            verify = False
         else:
             v = 'on'
+            verify = True
         print("Using JTAGSPI mode with variant '{}', to address 0x{:08x}, verify is {}".format(args.jtagspi_variant, args.address, v))
-        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=~args.no_verify, do_reset=args.reset_prog, raw_binary=args.raw_binary)
+        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=verify, do_reset=args.reset_prog, raw_binary=args.raw_binary)
         # do_spi_bitstream is responsible for executing its own jtag chain
         GPIO.cleanup()
         exit(0)
