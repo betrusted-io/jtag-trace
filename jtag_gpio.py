@@ -431,6 +431,10 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
+    if address >= 0x1000000:
+        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
+        exit(1)
+
     virtualspi = SpiPort(1)
 
     benchmark = False
