@@ -12,21 +12,23 @@ def main():
     )
     args = parser.parse_args()
 
-    basename = os.path.splitext(args.keyfile)
+    basename = os.path.splitext(args.key_file)[0]
 
     with open(basename + '.jtg', 'w') as ofile:
-        with open(args.keyfile, 'r') as nky:
+        with open(args.key_file, 'r') as nky:
             for lines in nky:
                 line = lines.split(' ')
                 if line[1] == '0':
                     nky_key = line[2].rstrip().rstrip(';')
+            #print(nky_key)
             keyfrags = wrap(nky_key, 8) # split key into 8 x 8 groups of words
 
-            if keyfrags.len() != 8:
+            if len(keyfrags) != 8:
                 print("Key has wrong length in .nky, please check format.")
                 exit(1)
             for frag in keyfrags:
-                if frag.len() != 8:
+                #print("{}".format(frag))
+                if len(frag) != 8:
                     print("Key fragment '{}' has wrong length, please check .nky format.".format(frag))
                     exit(1)
 
@@ -73,7 +75,7 @@ id, 0, 0
 
 ir, 6, 0b010001, isc_program
 dr, 32, 0x557b
-            """)
+""")
             for frag in keyfrags:
                 ofile.write("ir, 6, 0b010001, isc_program\n")
                 ofile.write("dr, 32, 0x{}\n".format(frag))
