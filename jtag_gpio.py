@@ -543,6 +543,46 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         print("Programming concluded")
 
 
+
+def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do_reset=False):
+    from serialflash import Mx66umFlashDevice
+    global jtag_legs
+
+    if address >= 0x1000000:
+        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
+        exit(1)
+
+    virtualspi = SpiPort(1)
+
+    # first load the jtagspi bitstream
+    jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
+    do_bitstream(jtagspi_bitstream)
+    if do_reset:
+       reset_fpga()
+    while len(jtag_legs):  # flush the commands from do_bitstream()
+       jtag_next()
+
+    # issue the command to get us into writing the USER1 IR
+    jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
+    while len(jtag_legs):
+        jtag_next()
+
+    virtualspi = SpiPort(1)
+    jedec_cmd = bytes((0x9f,))
+    id = virtualspi.exchange(jedec_cmd, 3)
+
+    virtualflash = Mx66umFlashDevice(virtualspi, id)
+       
+    with open(ofile, "wb") as f:
+        print("Reading back data...")
+        read_data = virtualflash.read(address, read_len)
+
+        f.write(read_data)
+        
+        print("Read concluded")
+
+        
+        
 def do_bitstream(ifile):
     global jtag_legs
 
@@ -904,6 +944,15 @@ def main():
     parser.add_argument(
         "-r", "--reset-prog", help="Pull the PROG pin before initiating any commands", default=False, action="store_true"
     )
+    parser.add_argument(
+        "--read", help="reads data to a file (argument is the filename)", default=False, action="store_true"
+    )
+    parser.add_argument(
+        "--read-len", help="length of data to read", default=0x280000
+    )
+    parser.add_argument(
+        "--read-addr", help="address to start read", default=0
+    )
     args = parser.parse_args()
     if args.debug:
        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -979,6 +1028,10 @@ def main():
     if args.wbstar != None:
         do_wbstar(ifile, args.wbstar)
         GPIO.cleanup()
+        exit(0)
+        
+    if args.read == True:
+        read_spi_bitstream(args.file, 'xc7s50', args.read_addr, args.read_len, args.reset_prog)
         exit(0)
         
     if args.spi_mode or args.raw_binary: # this takes precdence over args.bitstream alone
