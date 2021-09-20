@@ -581,6 +581,44 @@ def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do
         
         print("Read concluded")
 
+def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False):
+    from serialflash import Mx66umFlashDevice
+    global jtag_legs
+
+    if address >= 0x1000000:
+        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
+        exit(1)
+
+    virtualspi = SpiPort(1)
+
+    # first load the jtagspi bitstream
+    jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
+    do_bitstream(jtagspi_bitstream)
+    if do_reset:
+       reset_fpga()
+    while len(jtag_legs):  # flush the commands from do_bitstream()
+       jtag_next()
+
+    # issue the command to get us into writing the USER1 IR
+    jtag_legs.append([JtagLeg.IR, '000010', 'user1'])
+    while len(jtag_legs):
+        jtag_next()
+
+    virtualspi = SpiPort(1)
+    jedec_cmd = bytes((0x9f,))
+    id = virtualspi.exchange(jedec_cmd, 3)
+
+    virtualflash = Mx66umFlashDevice(virtualspi, id)
+    erase_size = virtualflash.get_erase_size()
+    print("Using erase block size of {} bytes".format(erase_size))
+    erase_size_in_sectors =  erase_len // erase_size
+    if erase_len % erase_size != 0:
+        erase_size_in_sectors += 1
+    print("Using erase block size of {} bytes, erasing {} blocks from 0x{:08x} to 0x{:08x} (rounded up from 0x{:08x})".format(erase_size, erase_size_in_sectors, address, address + erase_size_in_sectors * erase_size, address + erase_len))
+
+    virtualflash.erase(address, erase_size_in_sectors * erase_size) 
+    
+    print("Erase concluded")
         
         
 def do_bitstream(ifile):
@@ -953,6 +991,12 @@ def main():
     parser.add_argument(
         "--read-addr", help="address to start read", default=0
     )
+    parser.add_argument(
+        "--erase", help="specifies an erase operation only (overrides all other options)", default=False, action="store_true"
+    )
+    parser.add_argument(
+        "--erase-len", help="erase [length] bytes starting at offset specified by --address", type=auto_int, default=0
+    )
     args = parser.parse_args()
     if args.debug:
        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -1028,6 +1072,10 @@ def main():
     if args.wbstar != None:
         do_wbstar(ifile, args.wbstar)
         GPIO.cleanup()
+        exit(0)
+
+    if args.erase == True:
+        erase('xc7s50', args.address, args.erase_len, args.reset_prog)
         exit(0)
         
     if args.read == True:
