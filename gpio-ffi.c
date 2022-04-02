@@ -8,16 +8,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdint.h>
 
 //#define BCM2708_PERI_BASE 0x3F000000 // tested on Rpi3
 #define GPIO_BASE (base + 0x200000)
 #define GPIO_LENGTH 4096
 
-typedef unsigned int uint32_t;
+volatile uintptr_t *pi_mmio_gpio = NULL;
 
-volatile uint32_t* pi_mmio_gpio = NULL;
-
-unsigned int pi_mmio_init(unsigned int base) {
+uintptr_t pi_mmio_init(off_t base) {
   if (pi_mmio_gpio == NULL) {
     int fd;
 
@@ -33,7 +32,7 @@ unsigned int pi_mmio_init(unsigned int base) {
       return 0;
     }
     // Map GPIO memory to location in process space.
-    pi_mmio_gpio = (uint32_t*)mmap(NULL, GPIO_LENGTH, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_BASE);
+    pi_mmio_gpio = (uintptr_t *)mmap(NULL, GPIO_LENGTH, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_BASE);
     close(fd);
     if (pi_mmio_gpio == MAP_FAILED) {
       // Don't save the result if the memory mapping failed.
@@ -41,12 +40,12 @@ unsigned int pi_mmio_init(unsigned int base) {
       return 0;
     }
   }
-  return (unsigned int) pi_mmio_gpio;
+  return (uintptr_t) pi_mmio_gpio;
 }
 
-#define GPIO_SET *((volatile unsigned int *)(gpio+7*4))  // sets   bits which are 1 ignores bits which are 0
-#define GPIO_CLR *((volatile unsigned int *)(gpio+10*4)) // clears bits which are 1 ignores bits which are 0
-#define GPIO_LVL *((volatile unsigned int *)(gpio+13*4))
+#define GPIO_SET *((volatile uintptr_t *)(gpio+7*4))  // sets   bits which are 1 ignores bits which are 0
+#define GPIO_CLR *((volatile uintptr_t *)(gpio+10*4)) // clears bits which are 1 ignores bits which are 0
+#define GPIO_LVL *((volatile uintptr_t *)(gpio+13*4))
 
 #define TCK_PIN 4
 #define TMS_PIN 17
