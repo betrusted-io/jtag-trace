@@ -52,7 +52,7 @@ uintptr_t pi_mmio_init(off_t base) {
 #define TDI_PIN 27
 #define TDO_PIN 22
 
-int jtag_pins(int tdi, int tms, unsigned int gpio) {
+int jtag_pins(int tdi, int tms, uintptr_t gpio) {
 
   GPIO_CLR = 1 << TCK_PIN;
 
@@ -71,7 +71,7 @@ int jtag_pins(int tdi, int tms, unsigned int gpio) {
   return (GPIO_LVL & (1 << TDO_PIN)) ? 1 : 0;
 }
 
-int jtag_prog(char *bitstream, unsigned int gpio) {
+int jtag_prog(char *bitstream, uintptr_t gpio) {
 
   GPIO_CLR = 1 << TMS_PIN; // TMS is known to be zero for this operation
   int i = 0;
@@ -91,7 +91,7 @@ int jtag_prog(char *bitstream, unsigned int gpio) {
   return 0; // we ignore TDO for speed
 }
 
-void jtag_prog_rbk(char *bitstream, unsigned int gpio, char *readback) {
+void jtag_prog_rbk(char *bitstream, uintptr_t gpio, char *readback) {
 
   GPIO_CLR = 1 << TMS_PIN; // TMS is known to be zero for this operation
   int i = 0;
