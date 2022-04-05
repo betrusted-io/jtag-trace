@@ -14,9 +14,9 @@
 #define GPIO_BASE (base + 0x200000)
 #define GPIO_LENGTH 4096
 
-volatile uintptr_t *pi_mmio_gpio = NULL;
+volatile uint32_t *pi_mmio_gpio = NULL;
 
-uintptr_t pi_mmio_init(off_t base) {
+volatile uint32_t *pi_mmio_init(uint32_t base) {
   if (pi_mmio_gpio == NULL) {
     int fd;
 
@@ -32,7 +32,7 @@ uintptr_t pi_mmio_init(off_t base) {
       return 0;
     }
     // Map GPIO memory to location in process space.
-    pi_mmio_gpio = (uintptr_t *)mmap(NULL, GPIO_LENGTH, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_BASE);
+    pi_mmio_gpio = (uint32_t *)mmap(NULL, GPIO_LENGTH, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_BASE);
     close(fd);
     if (pi_mmio_gpio == MAP_FAILED) {
       // Don't save the result if the memory mapping failed.
@@ -40,19 +40,19 @@ uintptr_t pi_mmio_init(off_t base) {
       return 0;
     }
   }
-  return (uintptr_t) pi_mmio_gpio;
+  return pi_mmio_gpio;
 }
 
-#define GPIO_SET *((volatile uintptr_t *)(gpio+7*4))  // sets   bits which are 1 ignores bits which are 0
-#define GPIO_CLR *((volatile uintptr_t *)(gpio+10*4)) // clears bits which are 1 ignores bits which are 0
-#define GPIO_LVL *((volatile uintptr_t *)(gpio+13*4))
+#define GPIO_SET *(gpio+7)  // sets   bits which are 1 ignores bits which are 0
+#define GPIO_CLR *(gpio+10) // clears bits which are 1 ignores bits which are 0
+#define GPIO_LVL *(gpio+13)
 
 #define TCK_PIN 4
 #define TMS_PIN 17
 #define TDI_PIN 27
 #define TDO_PIN 22
 
-int jtag_pins(int tdi, int tms, uintptr_t gpio) {
+int jtag_pins(int tdi, int tms, volatile uint32_t *gpio) {
 
   GPIO_CLR = 1 << TCK_PIN;
 
@@ -71,7 +71,7 @@ int jtag_pins(int tdi, int tms, uintptr_t gpio) {
   return (GPIO_LVL & (1 << TDO_PIN)) ? 1 : 0;
 }
 
-int jtag_prog(char *bitstream, uintptr_t gpio) {
+int jtag_prog(char *bitstream, volatile uint32_t *gpio) {
 
   GPIO_CLR = 1 << TMS_PIN; // TMS is known to be zero for this operation
   int i = 0;
@@ -91,7 +91,7 @@ int jtag_prog(char *bitstream, uintptr_t gpio) {
   return 0; // we ignore TDO for speed
 }
 
-void jtag_prog_rbk(char *bitstream, uintptr_t gpio, char *readback) {
+void jtag_prog_rbk(char *bitstream, volatile uint32_t *gpio, char *readback) {
 
   GPIO_CLR = 1 << TMS_PIN; // TMS is known to be zero for this operation
   int i = 0;
