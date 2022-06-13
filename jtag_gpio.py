@@ -467,6 +467,10 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     with open(ifile, "rb") as f:
         binfile = f.read()
 
+        if len(binfile) + address >= 0x1000000:
+            print('Image exceeds 24-bit addressing limit. Use USB to upload the image!')
+            exit(1)
+
         position = 0
         if raw_binary == False:
             while position < len(binfile):
@@ -1081,8 +1085,8 @@ def main():
     if args.read == True:
         read_spi_bitstream(args.file, 'xc7s50', args.read_addr, args.read_len, args.reset_prog)
         exit(0)
-        
-    if args.spi_mode or args.raw_binary: # this takes precdence over args.bitstream alone
+
+    if args.spi_mode or args.raw_binary: # this takes precedence over args.bitstream alone
         if args.no_verify:
             v = 'off'
             verify = False
