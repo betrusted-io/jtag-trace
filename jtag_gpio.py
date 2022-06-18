@@ -432,8 +432,8 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     global jtag_legs
 
     if address >= 0x1000000:
-        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
-        exit(1)
+        print("WARNING: 4-byte addressing required, address 0x{:0x}.".format(address))
+        #exit(1)
 
     virtualspi = SpiPort(1)
 
@@ -468,8 +468,8 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
         binfile = f.read()
 
         if len(binfile) + address >= 0x1000000:
-            print('Image exceeds 24-bit addressing limit. Use USB to upload the image!')
-            exit(1)
+            print('Warning: Image exceeds 24-bit addressing limit. Using experimental 4-byte addressing!')
+            # exit(1)
 
         position = 0
         if raw_binary == False:
@@ -553,8 +553,7 @@ def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do
     global jtag_legs
 
     if address >= 0x1000000:
-        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
-        exit(1)
+        print("Warning: 4-byte addressing required (0x{:x}).".format(address))
 
     virtualspi = SpiPort(1)
 
@@ -590,8 +589,7 @@ def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False):
     global jtag_legs
 
     if address >= 0x1000000:
-        print("Only 3-byte addressing supported, address 0x{:0x} too large. Quitting.".format(address))
-        exit(1)
+        print("Warning: 4-byte addressing required, address 0x{:0x}.".format(address))
 
     virtualspi = SpiPort(1)
 

@@ -307,9 +307,9 @@ class _SpiFlashDevice(SerialFlash):
        inherit from this class for feature specialization.
     """
 
-    CMD_READ_LO_SPEED = 0x03  # Read @ low speed
-    CMD_READ_HI_SPEED = 0x0B  # Read @ high speed
-    ADDRESS_WIDTH = 3
+    CMD_READ_LO_SPEED = 0x13  # Read @ low speed
+    CMD_READ_HI_SPEED = 0x0C  # Read @ high speed
+    ADDRESS_WIDTH = 4
 
     def __init__(self, spiport: SpiPort):
         self._spi = spiport
@@ -327,7 +327,7 @@ class _SpiFlashDevice(SerialFlash):
             raise SerialFlashValueError('Out of range')
         buf = bytearray()
         while length > 0:
-            size = min(length, 0xFFFFFF)  # Max payload size is 4 gigabits = 16MiB
+            size = min(length, 0xFFFFFFFF)
             data = self._read_hi_speed(address, size)
             length -= len(data)
             address += len(data)
@@ -477,13 +477,13 @@ class _SpiFlashDevice(SerialFlash):
 
     def _read_lo_speed(self, address: int, length: int) -> bytes:
         read_cmd = bytes((self.CMD_READ_LO_SPEED,
-                          (address >> 16) & 0xff, (address >> 8) & 0xff,
+                          (address >> 24) & 0xff, (address >> 16) & 0xff, (address >> 8) & 0xff,
                           address & 0xff))
         return self._spi.exchange(read_cmd, length)
 
     def _read_hi_speed(self, address: int, length: int) -> bytes:
         read_cmd = bytes((self.CMD_READ_HI_SPEED,
-                          (address >> 16) & 0xff, (address >> 8) & 0xff,
+                          (address >> 24) & 0xff, (address >> 16) & 0xff, (address >> 8) & 0xff,
                           address & 0xff, 0))
         return self._spi.exchange(read_cmd, length)
 
@@ -556,12 +556,12 @@ class _Gen25FlashDevice(_SpiFlashDevice):
     CMD_READ_STATUS = 0x05  # Read status register
     CMD_WRITE_ENABLE = 0x06  # Write enable
     CMD_WRITE_DISABLE = 0x04  # Write disable
-    CMD_PROGRAM_PAGE = 0x02  # Write page
+    CMD_PROGRAM_PAGE = 0x12  # Write page
     CMD_EWSR = 0x50  # Enable write status register
     CMD_WRSR = 0x01  # Write status register
-    CMD_ERASE_SUBSECTOR = 0x20
+    CMD_ERASE_SUBSECTOR = 0x21
     CMD_ERASE_HSECTOR = 0x52
-    CMD_ERASE_SECTOR = 0xD8
+    CMD_ERASE_SECTOR = 0xDC
     CMD_ERASE_CHIP = 0xC7
 
     def __init__(self, spi: SpiPort):
@@ -686,7 +686,7 @@ class _Gen25FlashDevice(_SpiFlashDevice):
         for addr, chunk in sequences:
             self._enable_write()
             wcmd = bytearray((self.CMD_PROGRAM_PAGE,
-                              (addr >> 16) & 0xff, (addr >> 8) & 0xff,
+                              (addr >> 24) & 0xff, (addr >> 16) & 0xff, (addr >> 8) & 0xff,
                               addr & 0xff))
             wcmd.extend(chunk)
             self._spi.exchange(wcmd)
@@ -700,7 +700,7 @@ class _Gen25FlashDevice(_SpiFlashDevice):
         while start < end:
             progress.update(start)
             self._enable_write()
-            cmd = bytes((command, (start >> 16) & 0xff,
+            cmd = bytes((command, (start >> 24) & 0xff, (start >> 16) & 0xff,
                          (start >> 8) & 0xff, start & 0xff))
             self._spi.exchange(cmd)
             self._wait_for_completion(times)
@@ -1320,7 +1320,7 @@ class At45FlashDevice(_SpiFlashDevice):
     def _erase_blocks(self, command, times, start, end, size):
         """Erase one or more blocks"""
         while start < end:
-            wcmd = bytes((command, (start >> 16) & 0xff,
+            wcmd = bytes((command, (start >> 24) & 0xff, (start >> 16) & 0xff,
                           (start >> 8) & 0xff, start & 0xff))
             self._spi.exchange(wcmd)
             self._wait_for_completion(times)
@@ -1368,7 +1368,7 @@ class At45FlashDevice(_SpiFlashDevice):
             self._wait_for_completion(self.get_timings('page'))
             # second step: commit device buffer into flash cells
             wcmd = bytes((self.CMD_COMMIT_BUFFER1,
-                          (poffset >> 16) & 0xff, (poffset >> 8) & 0xff,
+                          (poffset >> 24) & 0xff, (poffset >> 16) & 0xff, (poffset >> 8) & 0xff,
                           poffset & 0xff))
             self._spi.exchange(wcmd)
             self._wait_for_completion(self.get_timings('page'))
