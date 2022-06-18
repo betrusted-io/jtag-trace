@@ -467,9 +467,11 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     with open(ifile, "rb") as f:
         binfile = f.read()
 
-        if len(binfile) + address >= 0x1000000:
-            print('Warning: Image exceeds 24-bit addressing limit. Using experimental 4-byte addressing!')
+        if len(binfile) + address >= 0x1380000:
+            print('Warning: Image exceeds the current upper bound for kernel data')
             # exit(1)
+        if len(binfile) + address >= 0x1000000:
+            print('Warning: kernel is getting bloated. Space remaining: {} bytes'.format(0x1380000 - (len(binfile) + address)))
 
         position = 0
         if raw_binary == False:
