@@ -30,7 +30,7 @@ The following packages (at least) are needed on an Rpi over a base raspbian inst
 
 ```
    sudo apt-get install python3-dev python3-rpi.gpio python3-pip python3-cffi
-   pip3 install progressbar2 cffi
+   pip3 install progressbar2 cffi pycryptodome
 ```
 
 This package will work best (perhaps relies upon?) a later version of cffi
