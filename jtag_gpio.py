@@ -990,10 +990,10 @@ def main():
         "--read", help="reads data to a file (argument is the filename)", default=False, action="store_true"
     )
     parser.add_argument(
-        "--read-len", help="length of data to read", default=0x280000
+        "--read-len", help="length of data to read", default=0x280000, type=auto_int
     )
     parser.add_argument(
-        "--read-addr", help="address to start read", default=0
+        "--read-addr", help="address to start read", default=0, type=auto_int
     )
     parser.add_argument(
         "--erase", help="specifies an erase operation only (overrides all other options)", default=False, action="store_true"
