@@ -427,7 +427,7 @@ def jtag_next():
         while state != JtagState.TEST_LOGIC_RESET and state != JtagState.RUN_TEST_IDLE:
             jtag_step()
 
-def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=False, raw_binary=False):
+def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=False, raw_binary=False, key=None):
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
@@ -456,7 +456,7 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     
     # first load the jtagspi bitstream
     jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
-    do_bitstream(jtagspi_bitstream)
+    do_bitstream(jtagspi_bitstream, key=key)
     if do_reset:
         reset_fpga()
     while len(jtag_legs):  # flush the commands from do_bitstream()
@@ -550,7 +550,7 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
 
 
 
-def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do_reset=False):
+def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do_reset=False, key=None):
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
@@ -561,7 +561,7 @@ def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do
 
     # first load the jtagspi bitstream
     jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
-    do_bitstream(jtagspi_bitstream)
+    do_bitstream(jtagspi_bitstream, key=key)
     if do_reset:
        reset_fpga()
     while len(jtag_legs):  # flush the commands from do_bitstream()
@@ -586,7 +586,7 @@ def read_spi_bitstream(ofile, jtagspi='xc7s50', address=0, read_len=0x280000, do
         
         print("Read concluded")
 
-def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False):
+def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False, key=None):
     from serialflash import Mx66umFlashDevice
     global jtag_legs
 
@@ -597,7 +597,7 @@ def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False):
 
     # first load the jtagspi bitstream
     jtagspi_bitstream = 'jtagspi/bscan_spi_{}.bit'.format(jtagspi)
-    do_bitstream(jtagspi_bitstream)
+    do_bitstream(jtagspi_bitstream, key=key)
     if do_reset:
        reset_fpga()
     while len(jtag_legs):  # flush the commands from do_bitstream()
@@ -625,8 +625,12 @@ def erase(jtagspi='xc7s50', address=0, erase_len=0x280000, do_reset=False):
     print("Erase concluded")
         
         
-def do_bitstream(ifile):
+def do_bitstream(ifile, key=None):
     global jtag_legs
+
+    if key is not None:
+        subprocess.run(["encrypt-bitstream.py", "-i", "0", "-f", ifile, "--key", key, "-o", "bscan_spi_local.bin"])
+        ifile = "bscan_spi_local.bin"
 
     with open(ifile, "rb") as f:
         binfile = f.read()
@@ -1001,6 +1005,9 @@ def main():
     parser.add_argument(
         "--erase-len", help="erase [length] bytes starting at offset specified by --address", type=auto_int, default=0
     )
+    parser.add_argument(
+        "--key", help="encrypt the helper SPI loader to the given FPGA key", type=str
+    )
     args = parser.parse_args()
     if args.debug:
        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -1008,7 +1015,7 @@ def main():
     if args.bitstream and args.raw_binary:
         print("Can't specify both --bitstream and --raw-binary at the same time")
         exit(1)
-                
+
     ifile = args.file
     compat = args.compat
 
@@ -1079,11 +1086,11 @@ def main():
         exit(0)
 
     if args.erase == True:
-        erase('xc7s50', args.address, args.erase_len, args.reset_prog)
+        erase('xc7s50', args.address, args.erase_len, args.reset_prog, args.key)
         exit(0)
         
     if args.read == True:
-        read_spi_bitstream(args.file, 'xc7s50', args.read_addr, args.read_len, args.reset_prog)
+        read_spi_bitstream(args.file, 'xc7s50', args.read_addr, args.read_len, args.reset_prog, args.key)
         exit(0)
 
     if args.spi_mode or args.raw_binary: # this takes precedence over args.bitstream alone
@@ -1094,13 +1101,13 @@ def main():
             v = 'on'
             verify = True
         print("Using JTAGSPI mode with variant '{}', to address 0x{:08x}, verify is {}".format(args.jtagspi_variant, args.address, v))
-        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=verify, do_reset=args.reset_prog, raw_binary=args.raw_binary)
+        do_spi_bitstream(ifile, jtagspi=args.jtagspi_variant, address=args.address, verify=verify, do_reset=args.reset_prog, raw_binary=args.raw_binary, key=args.key)
         # do_spi_bitstream is responsible for executing its own jtag chain
         GPIO.cleanup()
         exit(0)
         
     if args.bitstream:
-        do_bitstream(ifile)
+        do_bitstream(ifile, key=args.key)
         if args.reset_prog:
             reset_fpga()
         while len(jtag_legs):
