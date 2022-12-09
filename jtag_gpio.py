@@ -462,8 +462,6 @@ def do_spi_bitstream(ifile, jtagspi='xc7s50', address=0, verify=True, do_reset=F
     while len(jtag_legs):  # flush the commands from do_bitstream()
        jtag_next()
 
-
-
     with open(ifile, "rb") as f:
         binfile = f.read()
 
