@@ -9,10 +9,6 @@ import binascii
 import logging
 import sys
 
-from bip_utils import (
-   Bip39MnemonicValidator, Bip39MnemonicDecoder
-)
-
 from pathlib import Path
 
 """
@@ -272,15 +268,22 @@ def dumpframes(ofile, framestream):
         ofile.write('\n')
 
 def try_key_to_bytes(input):
-    if len(input.split(' ')) == 24: # 24 words is BIP-39
-        # Get if a mnemonic is valid with automatic language detection, return bool
-        assert(Bip39MnemonicValidator().IsValid(input))
-        # Like before with automatic language detection
-        key_bytes = Bip39MnemonicDecoder().Decode(input)
-    else:
-        key_bytes = int(input, 16).to_bytes(32, byteorder='big')
-    return key_bytes
+    try:
+        from bip_utils import (
+           Bip39MnemonicValidator, Bip39MnemonicDecoder
+        )
 
+        if len(input.split(' ')) == 24: # 24 words is BIP-39
+            # Get if a mnemonic is valid with automatic language detection, return bool
+            assert(Bip39MnemonicValidator().IsValid(input))
+            # Like before with automatic language detection
+            key_bytes = Bip39MnemonicDecoder().Decode(input)
+        else:
+            key_bytes = int(input, 16).to_bytes(32, byteorder='big')
+        return key_bytes
+    except:
+        key_bytes = int(input, 16).to_bytes(32, byteorder='big')
+        return key_bytes
 
 def main():
     parser = argparse.ArgumentParser(description="Re-encrypt 7-series bitstream with a new key")
@@ -404,9 +407,9 @@ def main():
         iv_pos = 0
         while position < len(binfile):
             cwd = int.from_bytes(binfile[position:position+4], 'big')
-            if cwd == 0x3001_6004:
+            if cwd == 0x30016004:
                 iv_pos = position+4
-            if cwd == 0x3003_4001:
+            if cwd == 0x30034001:
                 break
             position = position + 1
 

@@ -629,9 +629,10 @@ def do_bitstream(ifile, key=None):
     global jtag_legs
 
     if key is not None:
-        subprocess.run(["encrypt-bitstream.py", "-i", "0", "-f", ifile, "--key", key, "-o", "bscan_spi_local.bin"])
+        sp = subprocess.run(["./encrypt-bitstream.py", "-i", "0", "-f", "jtagspi/bscan_spi_xc7s50.bin", "--key", key, "-o", "bscan_spi_local.bin", "-d"])
         ifile = "bscan_spi_local.bin"
 
+    logging.debug("Using helper bitstream: {}".format(ifile))
     with open(ifile, "rb") as f:
         binfile = f.read()
 
@@ -643,6 +644,7 @@ def do_bitstream(ifile, key=None):
             position = position + 1
 
         config_data = int_to_binstr(int.from_bytes(binfile[position:], byteorder='big'))
+        logging.debug("Config data is {} bytes long".format(len(config_data)))
 
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
@@ -658,6 +660,7 @@ def do_bitstream(ifile, key=None):
         jtag_legs.append([JtagLeg.RS, '0', 'reset'])
         jtag_legs.append([JtagLeg.IR, '001001', 'idcode'])
         jtag_legs.append([JtagLeg.DR, '00000000000000000000000000000000', ' '])
+        logging.debug("Config data uploaded")
 
 
 """
